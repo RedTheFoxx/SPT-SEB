@@ -434,6 +434,7 @@ Only the `Volume` section is visible by default. Everything else is marked `IsAd
 | Engine | `LiveSpatializerEnabled` | `true` | Filters third-person shots and grenades according to their position. Read when sources are created |
 | Engine | `LiveGroupPresetsEnabled` | `true` | Live curves, occlusion radius and HRTF for all groups, volumes with the live mixer. Read at game start |
 | Occlusion | `LiveOcclusionGateEnabled` | `true` | Source muted until its occlusion is known and outside hearing range |
+| Occlusion | `SpectatorListenerRoomEnabled` | `true` | While a spectator camera (Fika) is away from the local player's body, the listener's room follows the camera instead of the body, so occlusion keeps running. The player the camera is attached to is heard unobstructed |
 | Occlusion | `ExtraMuffleStrength` | `0` | Added muffling, absent from the live game: 0 = like live, 1 = maximum |
 | Occlusion | `MinMuffleCutoffHz` | `500` | Lowest cutoff reached by the module |
 | Engine | `LiveAmbientPortEnabled` | `true` | Live ambience values: blender fades and curves, indoor rain level and speed, effect sends muted indoors. Read at raid start |

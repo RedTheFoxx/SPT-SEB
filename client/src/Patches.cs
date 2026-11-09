@@ -61,6 +61,14 @@ namespace SoundEngineBackport
             {
                 Logger.LogError($"live acoustic data patch failed: {e}");
             }
+            try
+            {
+                Harmony.CreateAndPatchAll(typeof(SpectatorListenerPatches), Guid);
+            }
+            catch (System.Exception e)
+            {
+                Logger.LogError($"spectator listener patches failed: {e}");
+            }
             Logger.LogInfo($"Sound Engine Backport v1.0.3 loaded (live engine port, extraMuffleStrength={Config.MuffleStrength.Value})");
         }
 
@@ -133,6 +141,7 @@ namespace SoundEngineBackport
         internal BepInEx.Configuration.ConfigEntry<bool> LiveSpatializerEnabled;
         internal BepInEx.Configuration.ConfigEntry<bool> LiveGroupPresetsEnabled;
         internal BepInEx.Configuration.ConfigEntry<bool> LiveOcclusionGateEnabled;
+        internal BepInEx.Configuration.ConfigEntry<bool> SpectatorListenerRoomEnabled;
         internal BepInEx.Configuration.ConfigEntry<float> MinMuffleCutoff;
         internal BepInEx.Configuration.ConfigEntry<float> SequenceResetBeats;
         internal BepInEx.Configuration.ConfigEntry<float> BurstFadeBeats;
@@ -192,6 +201,8 @@ namespace SoundEngineBackport
                 "EFT 1.0 distance curves and volumes of all sound types. Off = SPT 4.1.6 values. Restart required.");
             LiveOcclusionGateEnabled = Advanced("Occlusion", "LiveOcclusionGateEnabled", true,
                 "Keeps a sound silent until the game knows if a wall blocks it, like EFT 1.0. Off = SPT 4.1.6, where it can leak through walls.");
+            SpectatorListenerRoomEnabled = Advanced("Occlusion", "SpectatorListenerRoomEnabled", true,
+                "Fika spectator: walls and rooms are heard from the camera, not from your extracted or dead body.");
             LiveSpatializerEnabled = Advanced(EngineSection, "LiveSpatializerEnabled", true,
                 "Filters other players' gunshots by direction, like EFT 1.0. Applies to weapons that have not fired yet.");
             MinMuffleCutoff = Advanced("Occlusion", "MinMuffleCutoffHz", 500f,
@@ -245,6 +256,8 @@ namespace SoundEngineBackport
             LiveGroupPresets.Enabled = LiveGroupPresetsEnabled.Value;
             LiveOcclusionGate.Enabled = LiveOcclusionGateEnabled.Value;
             LiveOcclusionGateEnabled.SettingChanged += (_, __) => LiveOcclusionGate.Enabled = LiveOcclusionGateEnabled.Value;
+            SpectatorListenerRoom.Enabled = SpectatorListenerRoomEnabled.Value;
+            SpectatorListenerRoomEnabled.SettingChanged += (_, __) => SpectatorListenerRoom.Enabled = SpectatorListenerRoomEnabled.Value;
             LiveOcclusionModule.MinCutoffFrequency = Mathf.Clamp(MinMuffleCutoff.Value, 100f, 8000f);
             ApplyEngineSettings();
 

@@ -44,10 +44,21 @@ namespace SoundEngineBackport.LiveEngine
                 return true;
             }
             State state = States.GetOrCreateValue(occluder);
-            if (container.IsOutOfHearingRangeWithOffset(HearingRangeOffset) || !state.Calculated)
+            if (container.IsOutOfHearingRangeWithOffset(HearingRangeOffset))
             {
                 HoldClosed(container);
                 return false;
+            }
+            if (!state.Calculated)
+            {
+                // nothing to wait for when the game has stopped computing occlusion (no
+                // listener room): closed here, the source would stay silent for good
+                if (occluder._audioSystem.CanUpdate)
+                {
+                    HoldClosed(container);
+                    return false;
+                }
+                return true;
             }
             if (!state.ScoreReady)
             {
