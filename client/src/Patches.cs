@@ -13,7 +13,7 @@ using SoundEngineBackport.LiveEngine;
 
 namespace SoundEngineBackport
 {
-    [BepInPlugin(Guid, "Sound Engine Backport", "1.0.3")]
+    [BepInPlugin(Guid, "Sound Engine Backport", "1.0.4")]
     public class Plugin : BaseUnityPlugin
     {
         // same GUID as the server mod and the Forge listing (checked by the Forge scanner)
@@ -69,7 +69,7 @@ namespace SoundEngineBackport
             {
                 Logger.LogError($"spectator listener patches failed: {e}");
             }
-            Logger.LogInfo($"Sound Engine Backport v1.0.3 loaded (live engine port, extraMuffleStrength={Config.MuffleStrength.Value})");
+            Logger.LogInfo($"Sound Engine Backport v1.0.4 loaded (live engine port, extraMuffleStrength={Config.MuffleStrength.Value})");
         }
 
         /// <summary>Up to 1.0.0 the client GUID, which names the config file, was
