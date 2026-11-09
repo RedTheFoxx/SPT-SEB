@@ -14,7 +14,10 @@ namespace SoundEngineBackport.LiveEngine
 
         internal sealed class Weapon
         {
+            // Not every weapon has every role; unassigned ones stay null by design.
+#pragma warning disable CS0649
             public Bank Body, BodySilenced, Tail, TailSilenced, Doublet, DoubletSilenced;
+#pragma warning restore CS0649
         }
 
         internal static readonly Dictionary<string, Weapon> ByContainer = new Dictionary<string, Weapon>
