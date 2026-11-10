@@ -63,6 +63,7 @@ client/                        BepInEx 5 plugin (netstandard2.1)
     LiveAudioData.cs           Live mixer, presets, limits and per-weapon range
     LiveMixerRouting.cs        Redirects scenes and sources to the live mixer
     LiveAmbientPort.cs         Live ambience fades, curves and sends
+    AmbientSoundCategories.cs  Volume per kind of isolated sound (birds, dogs…)
     LiveGroupPresetTable.cs    Sound group presets (generated)
     LiveOcclusionGate.cs       Live occlusion gate
     LiveOcclusionModule.cs     Optional extra muffling, disabled by default
@@ -267,6 +268,19 @@ SPT's indoor rain clips are much louder than the live ones: their volume is redu
 
 The live depth multiplier (4) is not taken over: SPT's job ignores portals beyond their depth, and the value would jump at that limit.
 
+### Isolated sounds (`AmbientSoundCategories`)
+
+Birds, dogs and the like are not part of the wind loops. In each map's `*_Sound` scene, every one of them is its own `BaseAmbientSoundPlayer`: `SeasonAmbientSoundPlayer` for the random calls (`Crow`, `Dogs`, `Frog`…), `EventRandomPlayer` for the event ones (`PitchedBat`, `ScaryMetal`, `FarZombie`…), plus the bird flocks of Woods (`AmbientSplineFlocksEmitterGroup`) and the Factory players grouped under `FarDogs`, `Crow`… Players are classified once by the name of their object, then by the names of up to three ancestors, in four categories:
+
+| Category | Names |
+|---|---|
+| Birds | `Sparrow`, `Crow` (and the Cyrillic `Сrow`), `Raven`, `Rook`, `Magpie`, `Lark`, `Finch`, `Goldfinch` (`Golfginch`), `Bullfinch`, `Siskin`, `BlueTit`, `Starling`, `Thrush`, `Nightingale` (`Nightigale`), `Woodpecker`, `Cucumber`, `Bellbird`, `Gagara`, `DarkCornuta`, `Robin`, `Waxwing`, `GreenMocking`, `Reed_warpler`, `Owl*`, `Snowy_owl`, `Buzzard`, `black_kite`, `White_tailed_eagle`, the flocks |
+| Dogs and wolves | `Dogs`, `FarDogs`, `DogsGroup`, `Wolves`, `wolves` |
+| Frogs, bats, insects and rats | `Frog`, `PitchedBat`, `Crickets`, `Corps_flies`, `Flies`, the `Rats*` and `RatGroup` players |
+| Eerie sounds | names with `scary`, `zombie`, `ghost`, `creepy`, `scrapes`, `underground_roar` |
+
+A postfix on `BaseAmbientSoundPlayer.GetBaseVolume` multiplies the volume by the category's gain. The player reads it at each play and each fade-in, so loops and one-shots follow the same slider. When a slider moves, players that are already playing fade to the new volume in 0.5 s. With `DebugLogs` on, the list of the players of each map and their category is written to the log at raid start (`ambient player <Category>: <object> xN`), to check what a map plays. A name that is not in the tables stays at the game's volume.
+
 ### Rooms, portals and routes (`LiveAcousticData`)
 
 Each map's `*_Sound` scene splits the level into audio rooms (`SpatialAudioRoom`) joined by portals (`SpatialAudioPortal`, `UniversalTriggerSpatialAudioPortal`, `MultiWindowPortal`): doors, windows, stairs, openings. A sound heard from another room goes through the cheapest of the precomputed routes between the two rooms, and the portals on the way muffle it. These routes are baked offline into `StreamingAssets/AudioBakeData/<map>.audiobakedata`: for each pair of rooms, the routes as lists of portal IDs, their cost and length. The file format is the same in SPT 4.1.6 and live 1.3.
@@ -419,6 +433,10 @@ Only the `Volume` section is visible by default. Everything else is marked `IsAd
 |---|---|---|---|
 | Volume | `RaidVolumeDb` | `0` | Level of the live mixer's `World` bus (all raid sounds), from −12 to +6 dB. The live game receives it from its server; +4 is the asset default. No effect without the live mixer. Applied live |
 | Volume | `AmbientVolumeDb` | `-4` | Level of the ambience alone, with or without a headset, from −20 to +6 dB. Chosen by ear, not a live value. Applied live |
+| Volume | `BirdsVolumeDb` | `0` | Level of the bird sounds, from −60 to 0 dB. −60 = off. Applied live |
+| Volume | `DogsVolumeDb` | `0` | Level of dogs and wolves, from −60 to 0 dB. −60 = off. Applied live |
+| Volume | `WildlifeVolumeDb` | `0` | Level of frogs, bats, crickets, flies and rats, from −60 to 0 dB. −60 = off. Applied live |
+| Volume | `EerieVolumeDb` | `0` | Level of far-off scrapes, creaks, ghostly tones and zombie groans, from −60 to 0 dB. −60 = off. Applied live |
 | Volume | `GunshotsVolumeDb` | `0` | Gain of all gunshots, applied by the engine on every shot (live engine and V1 path). Applied live |
 | Volume | `HandlingVolumeDb` | `0` | Gain of the `Weaponary` preset, after the `World` bus compensation, from −20 to +2.5 dB. Volume capped at 1.0 |
 | Volume | `ExplosionsVolumeDb` | `0` | Gain of the `Grenades` preset, from −20 to +2.5 dB. Volume capped at 1.0 |

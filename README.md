@@ -102,6 +102,10 @@ Open the Configuration Manager with **F12**, section **Volume**. Changes apply i
 |---|---|---|
 | Raid volume | 0 dB | Master volume of the raid |
 | Ambient volume | −4 dB | Background ambience |
+| Birds | 0 dB | Birdsong, crows, owls, birds of prey. Lowest value = off |
+| Dogs and wolves | 0 dB | Barking and howling in the distance. Lowest value = off |
+| Frogs, bats, insects and rats | 0 dB | Small animals. Lowest value = off |
+| Eerie sounds | 0 dB | Far-off scrapes, creaks, ghostly tones, zombie groans. Lowest value = off |
 | Gunshots volume | 0 dB | All gunshots |
 | Handling volume | 0 dB | Reloads, magazines, fire selector |
 | Explosions volume | 0 dB | Grenades and explosions |

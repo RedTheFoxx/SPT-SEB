@@ -55,6 +55,14 @@ namespace SoundEngineBackport
             }
             try
             {
+                Harmony.CreateAndPatchAll(typeof(AmbientCategoryPatches), Guid);
+            }
+            catch (System.Exception e)
+            {
+                Logger.LogError($"ambient category patches failed: {e}");
+            }
+            try
+            {
                 Harmony.CreateAndPatchAll(typeof(LiveAcousticPatches), Guid);
             }
             catch (System.Exception e)
@@ -133,6 +141,10 @@ namespace SoundEngineBackport
         internal BepInEx.Configuration.ConfigEntry<bool> LiveMixerEnabled;
         internal BepInEx.Configuration.ConfigEntry<float> RaidVolumeDb;
         internal BepInEx.Configuration.ConfigEntry<float> AmbientVolumeDb;
+        internal BepInEx.Configuration.ConfigEntry<float> BirdsVolumeDb;
+        internal BepInEx.Configuration.ConfigEntry<float> DogsVolumeDb;
+        internal BepInEx.Configuration.ConfigEntry<float> WildlifeVolumeDb;
+        internal BepInEx.Configuration.ConfigEntry<float> EerieVolumeDb;
         internal BepInEx.Configuration.ConfigEntry<float> GunshotsVolumeDb;
         internal BepInEx.Configuration.ConfigEntry<float> HandlingVolumeDb;
         internal BepInEx.Configuration.ConfigEntry<float> ExplosionsVolumeDb;
@@ -174,12 +186,26 @@ namespace SoundEngineBackport
                 new ConfigurationManagerAttributes { DispName = name, Order = order }));
         }
 
+        /// <summary>Isolated ambient sounds: 0 dB leaves the game as it is, the lowest value turns them off.</summary>
+        private BepInEx.Configuration.ConfigEntry<float> AnimalVolume(string key, string name, int order, string description)
+        {
+            return Volume(key, name, order, 0f, AmbientSoundCategories.MuteDb, 0f, description);
+        }
+
         internal void BindAndApply()
         {
             RaidVolumeDb = Volume("RaidVolumeDb", "Raid volume (all sounds)", 70, 0f, -12f, 6f,
                 "Volume of all raid sounds. The sliders below add to it. 0 = SPT 4.1.6 level, 4 = EFT 1.0 mixer default (may clip).");
             AmbientVolumeDb = Volume("AmbientVolumeDb", "Ambience (rain, wind, day/night)", 60, -4f, -20f, 6f,
                 "Background ambience only: rain, wind, day and night.");
+            BirdsVolumeDb = AnimalVolume("BirdsVolumeDb", "Birds", 59,
+                "Birdsong, crows, owls and birds of prey, on every map. Lowest = off. Applied live.");
+            DogsVolumeDb = AnimalVolume("DogsVolumeDb", "Dogs and wolves", 58,
+                "Barking and howling in the distance. Lowest = off. Applied live.");
+            WildlifeVolumeDb = AnimalVolume("WildlifeVolumeDb", "Frogs, bats, insects and rats", 57,
+                "Small animals: frogs, bats, crickets, flies and rats. Lowest = off. Applied live.");
+            EerieVolumeDb = AnimalVolume("EerieVolumeDb", "Eerie sounds", 56,
+                "Far-off scrapes, metal and wood creaks, ghostly tones and zombie groans. Lowest = off. Applied live.");
             GunshotsVolumeDb = Volume("GunshotsVolumeDb", "Gunshots", 50, 0f, -20f, 6f,
                 "All gunshots, yours and others'. 0 = EFT 1.0 level.");
             HandlingVolumeDb = Volume("HandlingVolumeDb", "Weapon handling", 40, 0f, -20f, GroupMaxDb,
@@ -248,6 +274,15 @@ namespace SoundEngineBackport
                 LiveMixer.ApplyWorldVolume();
             };
             ApplyVolumeTrims();
+            ApplyAmbientCategories();
+            foreach (var trim in new[] { BirdsVolumeDb, DogsVolumeDb, WildlifeVolumeDb, EerieVolumeDb })
+            {
+                trim.SettingChanged += (_, __) =>
+                {
+                    ApplyAmbientCategories();
+                    AmbientSoundCategories.Refresh();
+                };
+            }
             foreach (var trim in new[] { GunshotsVolumeDb, HandlingVolumeDb, ExplosionsVolumeDb, CharacterVolumeDb, ImpactsVolumeDb })
             {
                 trim.SettingChanged += (_, __) => ApplyVolumeTrims();
@@ -280,6 +315,14 @@ namespace SoundEngineBackport
             LiveGroupPresets.SetTrim("Grenades", ExplosionsVolumeDb.Value);
             LiveGroupPresets.SetTrim("Character", CharacterVolumeDb.Value);
             LiveGroupPresets.SetTrim("Impacts", ImpactsVolumeDb.Value);
+        }
+
+        private void ApplyAmbientCategories()
+        {
+            AmbientSoundCategories.SetTrimDb(AmbientCategory.Birds, BirdsVolumeDb.Value);
+            AmbientSoundCategories.SetTrimDb(AmbientCategory.DogsAndWolves, DogsVolumeDb.Value);
+            AmbientSoundCategories.SetTrimDb(AmbientCategory.SmallWildlife, WildlifeVolumeDb.Value);
+            AmbientSoundCategories.SetTrimDb(AmbientCategory.Eerie, EerieVolumeDb.Value);
         }
 
         private void ApplyEngineSettings()
