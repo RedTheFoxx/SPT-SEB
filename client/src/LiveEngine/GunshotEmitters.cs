@@ -3,18 +3,53 @@
 //    the previous one keeps ringing and fades out once the next one starts.
 //  - SingleGunshotEmitter: isolated shots, which ring out completely (live has no
 //    fade for them: no pending-fade list, no fade time).
-//  - CompositeGunshotEmitter: routes to the right strategy per fire mode.
+// LiveWeaponSoundEngine picks one or the other per fire mode.
 using System;
 using System.Collections.Generic;
 using Audio.ReverbSubsystem;
+using EFT;
 using HarmonyLib;
 using UnityEngine;
 using UnityEngine.Audio;
 
 namespace SoundEngineBackport.LiveEngine
 {
+    /// <summary>Live ClientAudioWeaponSettings.WeaponPlaybackSettings (1.3.0.48484 dump).
+    /// FireLoopBreakMultiplier is the pause (in beats) that ends a salve and
+    /// BurstFireFadeMultiplier the fade between shots (in beats).</summary>
+    public sealed class WeaponPlaybackSettings
+    {
+        public float FireLoopBreakMultiplier;
+        public float BurstFireFadeMultiplier;
+        public float MinRandomPitch;
+        public float MaxRandomPitch;
+        public float MinClampPitch;
+        public float MaxClampPitch;
+        public float OcclusionThreshold;
+        public bool AdaptiveFadeEnabled;
+        public float AdaptiveFadeLeadBeatsThreshold;
+        public float AdaptiveFadeMaxMultiplier;
+        public float AdaptiveFadeMaxSeconds;
+    }
+
+    /// <summary>Live ShotPlaybackContext (Audio.Weapons), plus the position of the shot.</summary>
+    public struct ShotPlaybackContext
+    {
+        public SoundBank Bank;
+        public Vector3 Position;
+        public float DistanceToListener;
+        public float MaxDistance;
+        public float BaseVolume;
+        public EnvironmentType Environment;
+        public bool IsFirstPerson;
+        public float Delay;
+        public float BeatDuration;
+        public float PitchA;
+        public float PitchB;
+    }
+
     /// <summary>What the two emitters share: setting up a source and starting a shot.</summary>
-    public abstract class GunshotEmitterBase : IAudioGunshotEmitter
+    public abstract class GunshotEmitterBase
     {
         internal static readonly AccessTools.FieldRef<ReverbSuperSource, AudioSource> ReverbSourceARef =
             AccessTools.FieldRefAccess<ReverbSuperSource, AudioSource>("_reverbSourceA");
@@ -22,28 +57,20 @@ namespace SoundEngineBackport.LiveEngine
             AccessTools.FieldRefAccess<ReverbSuperSource, AudioSource>("_reverbSourceB");
 
         protected readonly DynamicBetterSourcePool Pool;
-        private bool _occlusionEnabled;
-        private bool _reverbEnabled;
-        protected bool IsDisposed;
+        private readonly LiveWeaponSoundEngine _engine;
 
-        protected GunshotEmitterBase(WeaponPoolSettings poolSettings)
+        protected GunshotEmitterBase(LiveWeaponSoundEngine engine, int maxSources)
         {
-            Pool = new DynamicBetterSourcePool(BetterAudio.AudioSourceGroupType.Gunshots, poolSettings);
+            _engine = engine;
+            Pool = new DynamicBetterSourcePool(maxSources);
         }
 
-        public double LastScheduledDspTime { get; protected set; } = -1.0;
-        public virtual bool IsBusy => Pool.IsBusy;
-        public Func<AudioMixerGroup> MixerGroupProvider { get; set; }
-        public Vector3? SoundPosition { get; set; }
-        public Func<double, float, float, BetterSource, int> PriorityProvider { get; set; }
-
-        public void EnabledOcclusion(bool enabled) => _occlusionEnabled = enabled;
-        public void EnabledReverb(bool enabled) => _reverbEnabled = enabled;
-        public void RegisterInOcclusionProcess(BaseSoundPlayer.IObserverToPlayerBridge playerBridge) => Pool.RegisterOcclusionPlayer(playerBridge);
+        public bool IsBusy => Pool.IsBusy;
 
         public abstract void ScheduleShotSound(ShotPlaybackContext context);
-        public abstract void Reset();
-        public abstract void Tick(double dspNow);
+        public virtual void Reset() { }
+        public virtual void Tick(double dspNow) => Pool.Tick(dspNow);
+        public void Dispose() => Pool.Dispose();
 
         /// <summary>Called before a pooled source is reused for a new shot.</summary>
         protected virtual void OnSourceBorrowed(SuperSource source) { }
@@ -76,23 +103,20 @@ namespace SoundEngineBackport.LiveEngine
             }
             OnSourceBorrowed(source);
 
-            if (SoundPosition.HasValue)
-            {
-                source.Position = SoundPosition.Value;
-            }
+            source.Position = context.Position;
             LiveFilterBlend filterBlend = Pool.GetFilterBlend(source);
             filterBlend?.PrepareShot(!context.IsFirstPerson);
             source.SetRolloff(context.MaxDistance);
-            source.IncludeInOcclusionProcess(_occlusionEnabled);
-            if (_occlusionEnabled)
+            source.IncludeInOcclusionProcess(!context.IsFirstPerson);
+            if (!context.IsFirstPerson)
             {
                 // every shot, like live: joins the container if needed and refreshes the
                 // occlusion now, so volume and mixer group below use the current values
-                Pool.ProcessOcclusion(source);
+                _engine.ProcessOcclusion(source);
             }
             // after the occlusion registration: the first shot of a player creates the
             // container that decides which mixer group is used
-            AudioMixerGroup mixerGroup = MixerGroupProvider?.Invoke();
+            AudioMixerGroup mixerGroup = _engine.ResolveMixerGroup();
             if (mixerGroup != null)
             {
                 source.SetMixerGroup(mixerGroup);
@@ -107,9 +131,9 @@ namespace SoundEngineBackport.LiveEngine
             source.EnableStereo(context.IsFirstPerson);
             if (LiveWeaponSoundEngine.ApplyReverbRouting)
             {
-                source.EnableReverb = _reverbEnabled;
+                source.EnableReverb = context.IsFirstPerson || context.Environment == EnvironmentType.Indoor;
             }
-            PriorityProvider?.Invoke(context.DistanceToListener, context.MaxDistance, context.PitchA, source);
+            _engine.ApplyPriority(source, context.DistanceToListener, context.MaxDistance);
             filterBlend?.ApplyNow();
 
             // same playback pattern as SPT's SuperAudioSample.PlayOn: raw volumes on both
@@ -127,7 +151,6 @@ namespace SoundEngineBackport.LiveEngine
             length = Mathf.Max(
                 clip1 != null ? clip1.length / Mathf.Max(0.01f, context.PitchA) : 0f,
                 clip2 != null ? clip2.length / Mathf.Max(0.01f, context.PitchB) : 0f);
-            LastScheduledDspTime = scheduled;
 
             if (PluginConfig.LogShotDetails)
             {
@@ -177,12 +200,6 @@ namespace SoundEngineBackport.LiveEngine
                 }
             }
         }
-
-        public virtual void Dispose()
-        {
-            IsDisposed = true;
-            Pool.Dispose();
-        }
     }
 
     public sealed class AutoFireGunshotEmitter : GunshotEmitterBase
@@ -208,24 +225,31 @@ namespace SoundEngineBackport.LiveEngine
             public float Duration;
         }
 
-        private readonly IAudioScheduleService _scheduler;
+        private const double BaseMinOffsetSec = 0.01;
+
         private readonly WeaponPlaybackSettings _settings;
+        private readonly double _minOffset;
         private readonly List<PendingFade> _pendingFades = new List<PendingFade>();
         private readonly List<ReverbFade> _reverbFades = new List<ReverbFade>();
         private double _nextIdealShotTime = -1.0;
         private SuperSource _lastUsedSource;
         private double _lastUsedEndTime;
 
-        public AutoFireGunshotEmitter(WeaponPlaybackSettings settings, WeaponPoolSettings poolSettings, IAudioScheduleService scheduler)
-            : base(poolSettings)
+        public AutoFireGunshotEmitter(LiveWeaponSoundEngine engine, WeaponPlaybackSettings settings, int maxSources)
+            : base(engine, maxSources)
         {
             _settings = settings;
-            _scheduler = scheduler;
+            // SPT has no server clock to align on: the DSP clock is the only time base. Never
+            // schedule inside the audio block being mixed, or the shot starts on the next
+            // block instead of on its exact time (21.3 ms blocks in the raid logs)
+            AudioSettings.GetDSPBufferSize(out int bufferLength, out _);
+            int sampleRate = AudioSettings.outputSampleRate;
+            _minOffset = Math.Max(BaseMinOffsetSec, sampleRate > 0 ? (double)bufferLength / sampleRate : 0.0);
         }
 
         public override void ScheduleShotSound(ShotPlaybackContext context)
         {
-            if (IsDisposed || context.Bank == null)
+            if (context.Bank == null)
             {
                 return;
             }
@@ -240,7 +264,7 @@ namespace SoundEngineBackport.LiveEngine
                 Reset();
             }
 
-            double scheduled = _scheduler.GetScheduledTime(timeToHear, _nextIdealShotTime, beat);
+            double scheduled = ShotTiming.ComputeScheduled(AudioSettings.dspTime, timeToHear, _nextIdealShotTime, beat, _minOffset);
             float fade = ShotTiming.ComputeFade(
                 beat,
                 (float)(scheduled - dspNow),
@@ -346,10 +370,6 @@ namespace SoundEngineBackport.LiveEngine
 
         public override void Tick(double dspNow)
         {
-            if (IsDisposed)
-            {
-                return;
-            }
             for (int i = _pendingFades.Count - 1; i >= 0; i--)
             {
                 PendingFade pending = _pendingFades[i];
@@ -382,128 +402,22 @@ namespace SoundEngineBackport.LiveEngine
             _pendingFades.Clear();
             _nextIdealShotTime = -1.0;
             _lastUsedSource = null;
-            LastScheduledDspTime = -1.0;
         }
     }
 
     public sealed class SingleGunshotEmitter : GunshotEmitterBase
     {
-        public SingleGunshotEmitter(WeaponPoolSettings poolSettings)
-            : base(poolSettings)
+        public SingleGunshotEmitter(LiveWeaponSoundEngine engine, int maxSources)
+            : base(engine, maxSources)
         {
         }
 
         public override void ScheduleShotSound(ShotPlaybackContext context)
         {
-            if (!IsDisposed && context.Bank != null)
+            if (context.Bank != null)
             {
                 TryStartShot(context, AudioSettings.dspTime + context.Delay, out _, out _);
             }
-        }
-
-        public override void Reset() { }
-
-        public override void Tick(double dspNow)
-        {
-            if (!IsDisposed)
-            {
-                Pool.Tick(dspNow);
-            }
-        }
-    }
-
-    public sealed class AudioFireModeSelector : IAudioFireModeSelector
-    {
-        public EEmitterFireMode CurrentFireMode { get; private set; } = EEmitterFireMode.Single;
-        public event Action<EEmitterFireMode> FireModeChanged;
-
-        public void SetFireMode(EEmitterFireMode fireMode)
-        {
-            if (CurrentFireMode == fireMode)
-            {
-                return;
-            }
-            CurrentFireMode = fireMode;
-            FireModeChanged?.Invoke(fireMode);
-        }
-    }
-
-    public sealed class CompositeGunshotEmitter : IAudioGunshotEmitter
-    {
-        private readonly AutoFireGunshotEmitter _auto;
-        private readonly SingleGunshotEmitter _single;
-        private readonly AudioFireModeSelector _selector;
-        private IAudioGunshotEmitter _current;
-
-        public CompositeGunshotEmitter(AutoFireGunshotEmitter auto, SingleGunshotEmitter single, AudioFireModeSelector selector)
-        {
-            _auto = auto;
-            _single = single;
-            _selector = selector;
-            _current = single;
-            selector.FireModeChanged += OnFireModeChanged;
-        }
-
-        private void OnFireModeChanged(EEmitterFireMode mode)
-        {
-            IAudioGunshotEmitter target = mode == EEmitterFireMode.Auto ? (IAudioGunshotEmitter)_auto : _single;
-            if (_current != target)
-            {
-                _current?.Reset();
-                _current = target;
-            }
-        }
-
-        public double LastScheduledDspTime => _current?.LastScheduledDspTime ?? -1.0;
-        public bool IsBusy => _auto.IsBusy || _single.IsBusy;
-
-        public Func<AudioMixerGroup> MixerGroupProvider
-        {
-            get => _auto.MixerGroupProvider;
-            set
-            {
-                _auto.MixerGroupProvider = value;
-                _single.MixerGroupProvider = value;
-            }
-        }
-
-        public void EnabledOcclusion(bool enabled)
-        {
-            _auto.EnabledOcclusion(enabled);
-            _single.EnabledOcclusion(enabled);
-        }
-
-        public void EnabledReverb(bool enabled)
-        {
-            _auto.EnabledReverb(enabled);
-            _single.EnabledReverb(enabled);
-        }
-
-        public void ScheduleShotSound(ShotPlaybackContext context) => _current?.ScheduleShotSound(context);
-
-        public void RegisterInOcclusionProcess(BaseSoundPlayer.IObserverToPlayerBridge playerBridge)
-        {
-            _auto.RegisterInOcclusionProcess(playerBridge);
-            _single.RegisterInOcclusionProcess(playerBridge);
-        }
-
-        public void Reset()
-        {
-            _auto.Reset();
-            _single.Reset();
-        }
-
-        public void Tick(double dspNow)
-        {
-            _auto.Tick(dspNow);
-            _single.Tick(dspNow);
-        }
-
-        public void Dispose()
-        {
-            _selector.FireModeChanged -= OnFireModeChanged;
-            _auto.Dispose();
-            _single.Dispose();
         }
     }
 }

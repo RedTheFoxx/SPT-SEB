@@ -91,8 +91,8 @@ namespace SoundEngineBackport.LiveEngine
             }
         }
 
-        /// <summary>Patch of SetLowPassFilterParameters: true when the call was consumed.</summary>
-        public static bool TryInterceptLowPass(BetterSource source, float frequency, float q, bool immediately)
+        /// <summary>Patch of SetLowPass/HighPassFilterParameters: true when the call was consumed.</summary>
+        public static bool TryIntercept(BetterSource source, bool lowPass, float frequency, float q, bool immediately)
         {
             if (!Registry.TryGetValue(source, out LiveFilterBlend blend))
             {
@@ -100,22 +100,14 @@ namespace SoundEngineBackport.LiveEngine
             }
             if (IncludedInOcclusionRef(source))
             {
-                blend._blend.SetOccluderLowPass(frequency, q);
-                blend.Apply(immediately);
-            }
-            return true;
-        }
-
-        /// <summary>Patch of SetHighPassFilterParameters: true when the call was consumed.</summary>
-        public static bool TryInterceptHighPass(BetterSource source, float frequency, float q, bool immediately)
-        {
-            if (!Registry.TryGetValue(source, out LiveFilterBlend blend))
-            {
-                return false;
-            }
-            if (IncludedInOcclusionRef(source))
-            {
-                blend._blend.SetOccluderHighPass(frequency, q);
+                if (lowPass)
+                {
+                    blend._blend.SetOccluderLowPass(frequency, q);
+                }
+                else
+                {
+                    blend._blend.SetOccluderHighPass(frequency, q);
+                }
                 blend.Apply(immediately);
             }
             return true;

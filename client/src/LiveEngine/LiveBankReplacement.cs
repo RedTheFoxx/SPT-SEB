@@ -34,8 +34,6 @@ namespace SoundEngineBackport.LiveEngine
 
         private static readonly Dictionary<string, LiveBundle> Bundles = new Dictionary<string, LiveBundle>();
         private static readonly ConditionalWeakTable<WeaponSoundPlayer, Handled> HandledPlayers = new ConditionalWeakTable<WeaponSoundPlayer, Handled>();
-        private static readonly AccessTools.FieldRef<BaseSoundPlayer, BaseSoundPlayer.IObserverToPlayerBridge> BridgeRef =
-            AccessTools.FieldRefAccess<BaseSoundPlayer, BaseSoundPlayer.IObserverToPlayerBridge>("playersBridge");
         private static readonly AccessTools.FieldRef<WeaponSoundPlayer, bool> IsFiringRef =
             AccessTools.FieldRefAccess<WeaponSoundPlayer, bool>("_isFiring");
 
@@ -53,7 +51,7 @@ namespace SoundEngineBackport.LiveEngine
             {
                 return;
             }
-            Weapon weapon = BridgeRef(player)?.Weapon as Weapon;
+            Weapon weapon = LiveWeaponSoundEngine.BridgeRef(player)?.Weapon as Weapon;
             if (weapon == null)
             {
                 return;

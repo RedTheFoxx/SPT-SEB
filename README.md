@@ -30,20 +30,6 @@ SEB brings the live game's **sound banks** and the **code that plays them** into
 
 ## What is ported
 
-```mermaid
-flowchart LR
-    L[(EFT 1.0<br/>live game)] --> B[Sound banks]
-    L --> E[Playback engine]
-    L --> M[Master mixer]
-    L --> A[Ambience]
-    L --> R[Room acoustics]
-    B --> S{{SPT 4.1}}
-    E --> S
-    M --> S
-    A --> S
-    R --> S
-```
-
 | Module | What you get |
 |---|---|
 | **Sound banks** | The live gunshots for 190 weapons, loaded in the background |

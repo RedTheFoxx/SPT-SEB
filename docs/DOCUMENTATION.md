@@ -7,17 +7,15 @@ Reference versions: SPT 4.1.6 (EFT 0.16.9.5.40743, Unity 2022.3.43f1) and live 1
 ## Contents
 
 1. [Overview](#1-overview)
-2. [The problem](#2-the-problem)
-3. [Repository layout](#3-repository-layout)
-4. [Life of a shot](#4-life-of-a-shot)
-5. [Client components](#5-client-components)
-6. [Bundles](#6-bundles)
-7. [Differences with stock SPT](#7-differences-with-stock-spt)
-8. [Deliberate deviations from the live game](#8-deliberate-deviations-from-the-live-game)
-9. [Configuration](#9-configuration)
-10. [Diagnostics](#10-diagnostics)
-11. [Building and regenerating](#11-building-and-regenerating)
-12. [Particularities and limits](#12-particularities-and-limits)
+2. [Repository layout](#2-repository-layout)
+3. [Life of a shot](#3-life-of-a-shot)
+4. [Client components](#4-client-components)
+5. [Bundles](#5-bundles)
+6. [Differences with stock SPT and with the live game](#6-differences-with-stock-spt-and-with-the-live-game)
+7. [Configuration](#7-configuration)
+8. [Diagnostics](#8-diagnostics)
+9. [Building and regenerating](#9-building-and-regenerating)
+10. [Particularities and limits](#10-particularities-and-limits)
 
 ## 1. Overview
 
@@ -31,9 +29,7 @@ The mod brings the live game's sound engine into SPT: the gunshot sounds and the
 
 Since both sides use almost the same Unity version, the live bundles load in SPT. The live game is compiled with IL2CPP and SPT runs on Mono, so the live code can't be reused: the plugin reimplements it in C#. The reference is the decompiled live code.
 
-## 2. The problem
-
-SPT and the live game don't play a shot the same way.
+The plugin is needed because the two games don't play a shot the same way:
 
 | | SPT 4.1.6 | Live 1.3 |
 |---|---|---|
@@ -41,9 +37,9 @@ SPT and the live game don't play a shot the same way.
 | **Burst playback** | A loop runs during the burst, then the tail is scheduled when firing stops | Each bullet has its own source; the previous one fades out when the next one starts |
 | **Bank storage** | Some in `audio/banks`, many in the weapon container | Same, but the distribution and content have changed |
 
-Without the plugin, a live bank played by the SPT engine sounds wrong: doubled shots in semi-auto and silent bursts, because an isolated clip gets looped.
+A live bank played by the SPT engine sounds wrong: doubled shots in semi-auto and silent bursts, because an isolated clip gets looped.
 
-## 3. Repository layout
+## 2. Repository layout
 
 ```text
 client/                        BepInEx 5 plugin (netstandard2.1)
@@ -51,40 +47,39 @@ client/                        BepInEx 5 plugin (netstandard2.1)
   live_mastermixer.bundle      Live mixer, loaded by the plugin
   acoustics/AudioBakeData/     Live rooms, portals and routes of 9 maps, in SPT's IDs (Git LFS),
                                each with its .scene check file
-  src/Patches.cs               Entry point, configuration, Harmony patches, V1 engine
+  src/Patches.cs               Entry point, configuration, shot patches, V1 engine
+  src/LegacyLoopCuts.cs        Where the V1 engine cuts a loop
   src/LiveEngine/
     LiveWeaponSoundEngine.cs   Per-weapon engine and per-frame update
-    GunshotEmitters.cs         Burst, single-shot and composite emitters
-    ShotTiming.cs              Timing computations, no Unity dependency
-    Schedulers.cs              Audio clock access for ShotTiming
+    GunshotEmitters.cs         Shot settings and context, burst and single-shot emitters
     DynamicBetterSourcePool.cs Audio source pool per emitter
-    LiveAudioMath.cs           Pitch, spatializer and filter blend, no Unity dependency
+    LiveAudioMath.cs           Shot timing, pitch, spatializer and filter blend, no Unity dependency
     LiveFilterBlend.cs         Applies that blend to shot sources
-    LiveAudioData.cs           Live mixer, presets, limits and per-weapon range
+    LiveAudioData.cs           Live mixer, presets, HRTF, limits and per-weapon range
     LiveMixerRouting.cs        Redirects scenes and sources to the live mixer
-    LiveAmbientPort.cs         Live ambience fades, curves and sends
-    AmbientSoundCategories.cs  Volume per kind of isolated sound (birds, dogs…)
-    LiveGroupPresetTable.cs    Sound group presets (generated)
-    LiveOcclusionGate.cs       Live occlusion gate
-    LiveOcclusionModule.cs     Optional extra muffling, disabled by default
+    LiveAmbient.cs             Live ambience values, volume per kind of isolated sound (birds, dogs…)
+    LiveOcclusion.cs           Live occlusion gate, optional extra muffling
     LiveBankReplacement.cs     On-the-fly bank replacement
-    LiveBankTable.cs           Weapon to banks table (generated)
     LiveAcousticData.cs        Loads the transcribed bake data of the location
-    EmitterTypes.cs            Shot settings and context
-    Abstractions.cs            Interfaces
+    SpectatorListenerRoom.cs   Listener room of spectator cameras (Fika)
+    LiveOutputRecorder.cs      Records the game's output to a WAV file
+    LiveGroupPresetTable.cs    Sound group presets (generated)
+    LiveBankTable.cs           Weapon to banks table (generated)
 server/                        SPT 4 server mod (net10.0)
-  SoundEngineBackport.dll
 spt-mod/                       Bundles (Git LFS) and bundles.json
-tools/extract_live_banks.py    Generates the extracted bundles and the table
-tools/extract_live_mixer.py    Generates live_mastermixer.bundle
-tools/extract_live_presets.py  Generates LiveGroupPresetTable.cs
-tools/audit_live_coverage.py   Checks that the live sounds are shipped and selected (read-only)
-tools/extract_live_acoustics.py Transcribes the live .audiobakedata into SPT's scenes
-tools/check_live_acoustics.py  Checks the transcribed files against SPT's game (read-only)
-docs/                          Technical documentation, live-acoustics-report.json
+tools/
+  extract_live_banks.py        Generates the extracted bundles and the table
+  extract_live_mixer.py        Generates live_mastermixer.bundle
+  extract_live_presets.py      Generates LiveGroupPresetTable.cs
+  extract_live_acoustics.py    Transcribes the live .audiobakedata into SPT's scenes
+  audit_live_coverage.py       Checks that the live sounds are shipped and selected (read-only)
+  check_live_acoustics.py      Checks the transcribed files against SPT's game (read-only)
+docs/                          This document, live-acoustics-report.json
 ```
 
-## 4. Life of a shot
+Each source file and each tool starts with a comment that says what it does and why: the measurements behind a choice are there, not here.
+
+## 3. Life of a shot
 
 ```mermaid
 flowchart TD
@@ -116,7 +111,7 @@ Detailed sequence of a shot through the live engine:
 7. **Playback.** The source starts with `PlayScheduled`, like `SuperAudioSample.PlayOn` in SPT.
 8. **Supersonic sound.** `FireSonicSound` is still called as in SPT.
 
-## 5. Client components
+## 4. Client components
 
 ### Plugin and patches (`Patches.cs`)
 
@@ -140,13 +135,14 @@ Detailed sequence of a shot through the live engine:
 | Prefix of `SpatialAudioDataLoader.LoadBakeDataAsync` | Checks the scene's rooms and portals, then gives the game the live file, or SPT's if the check fails |
 | Postfix of `SpatialAudioDataLoader.DataLoadedHandler` | Logs what the game loaded |
 
-`IsLegacyBank` classifies a bank as old if one of its clips contains `loop` (any case, some WTT-Armory clips have no underscore) without containing `tail`. On an automatic weapon, a bank with one clip per distance layer, all of the same length (within 5 %), is old too: SPT always loops the Body of an automatic weapon, while live banks hold up to 8 variants per layer. MassiveSoftWeapons names its loops without `loop` (SCAR/ISOH `scar_h_outdoor_close`, MCW, QBZ-03, Grau, QBZ-97, DG-56, TR-75/76), and the live engine played the whole 1.2 to 1.7 s loop for every bullet, a burst for each semi shot. Single-variant live banks (bolt-actions, pistols, the PD flare) sit on non-automatic weapons and stay live. The shape of each bank is cached, because reading its clips on every bullet would be costly; `DebugLogs` writes it as a `[bank]` line.
+`IsLegacyBank` sends a bank to the V1 engine when one of its clips is named as a loop (`loop` without `tail`, any case), or, on an automatic weapon, when it has one clip per distance layer, all of the same length within 5 %: MassiveSoftWeapons names its loops without `loop`. Live banks hold up to 8 variants per layer, and the single-variant live banks (bolt-actions, pistols, the PD flare) sit on non-automatic weapons, so they stay live. The shape of each bank is scanned once; `DebugLogs` writes it as a `[bank]` line.
 
 ### V1 engine
 
-This engine serves banks that remain in loop format, for example on some WTT-Armory weapons. It keeps SPT's loop behavior, with a queue and a scheduled tail. One difference: SPT ends a salve only when the trigger is released, even in semi, so a 100 ms click played two beats of the loop for one bullet. Outside `fullauto` and `burst`, the V1 engine schedules the tail one beat after the shot, as SPT does for a trigger already released.
+This engine serves banks that remain in loop format: some WTT-Armory and MassiveSoftWeapons weapons, the live RPD, M60 and silenced AA-12. It keeps SPT's loop behavior, with a queue and a scheduled tail, except on two points:
 
-The loop is not cut on SPT's grid (`ClipLength / 16`) either. Many custom loops do not follow it: the KAC PDW loop holds 17.3 shots, and its silenced loop starts each shot about 18 ms before its grid line. The grid cut then lands inside a shot, up to full scale, while the tail starts around 0.2, and the queue does no crossfade. `LegacyLoopCuts` reads each loop clip once (`AudioClip.GetData`) and lists its gaps: the lowest point of a 3 ms envelope over ±25 ms, below 70 % of its peak. The cut ending the shot of a beat goes to the quietest gap from 0.65 beat before its grid line to 0.2 beat after it, not yet played. A single shot ends on the first beat (0.35 to 1.2 beats), a 2-round burst on the second, as in SPT (its second shot plays no sound of its own; up to 1.0.1 the V1 engine ended it on the first beat, so it sounded like a single shot). A salve ends on the beat SPT picks (the next grid line after the release); if that beat's gap and grid cut are both already past, the next shot is already playing and ends at its own gap rather than being cut at once (5 % of releases end more than a beat after the release this way). The grid cut, 15 ms before the beat, stays when no gap is found, when it is quieter, or when the clip can't be read. Gap times count in blocks of `frequency / 1000` frames (0.998 ms at 44.1 kHz), and the level a cut leaves is the peak of the millisecond before it. Over the 338 loop clips a V1 salve can play (WTT-Armory, the live RPD, M60 and silenced AA-12 loops, WTT-ContentBackport's), measured on the real samples, the peak left at the cut drops from 0.31 to 0.21 on single shots, from 0.33 to 0.22 on 2-round bursts and from 0.44 to 0.31 on salve ends. No loop gets worse, except 5 bursts by 0.02 to 0.04. `DebugLogs` writes each cut as a `[loop]` line.
+- **Semi-auto.** SPT ends a salve only when the trigger is released, so a 100 ms click played two beats of the loop for one bullet. Outside `fullauto` and `burst`, the tail is scheduled one beat after the shot, and two beats after a 2-round burst, whose second shot plays no sound of its own.
+- **Loop cut.** SPT cuts the loop on a grid of `ClipLength / 16`. Many custom loops don't follow it (the KAC PDW loop holds 17.3 shots), so the cut lands inside a shot, with no crossfade. `LegacyLoopCuts` reads each loop clip once, lists the quiet gaps between its shots and cuts in the quietest gap around the grid line (0.65 beat before to 0.2 beat after). The grid cut, 15 ms before the beat, stays when it is quieter, when no gap is found or when the clip can't be read. Over the 338 loop clips concerned, the peak left at the cut drops from 0.31 to 0.21 on single shots, from 0.33 to 0.22 on 2-round bursts and from 0.44 to 0.31 on salve ends. `DebugLogs` writes each cut as a `[loop]` line.
 
 The V1 engine can also play a bank of isolated clips if the live engine is disabled.
 
@@ -171,11 +167,11 @@ It also decides the mixer group using the live rule: the occluded group above an
 
 **Clip ends.** Every source of a shot (the two layers and the two reverb sources) stops 2 ms before the end of its clip, through `SetScheduledEndTime`. At the last sample, resampling (clips at 44.1 kHz, output at 48 kHz, pitch other than 1) rereads the clip's first sample. Since 625 of the 916 measured live clips start at full scale, without this margin every close shot ended with a hard click, 1.4 s after the start for an AK. The 2 ms fall in the clips' trailing silence (46 ms median).
 
-**`CompositeGunshotEmitter`** routes to one or the other according to the fire mode, and closes the sequence of the emitter it leaves.
+`LiveWeaponSoundEngine` routes each shot to one or the other according to the fire mode, and closes the burst sequence when it leaves the burst emitter.
 
 A 2-round burst triggers only one `FireBullet` in the game: the engine therefore schedules the second shot one beat later.
 
-### Timing (`ShotTiming.cs`, `Schedulers.cs`)
+### Timing (`ShotTiming` in `LiveAudioMath.cs`)
 
 The start time of a burst shot is computed as follows:
 
@@ -186,7 +182,7 @@ latest   = earliest + max(30 ms, beat / 2)
 start    = previous shot + beat, clamped between those two bounds
 ```
 
-The first shot of a burst starts at the "earliest" time. `ShotTiming` has no Unity dependency, which allows testing it outside the game.
+The first shot of a burst starts at the "earliest" time.
 
 ### Source pool (`DynamicBetterSourcePool`)
 
@@ -285,14 +281,12 @@ A postfix on `BaseAmbientSoundPlayer.GetBaseVolume` multiplies the volume by the
 
 Each map's `*_Sound` scene splits the level into audio rooms (`SpatialAudioRoom`) joined by portals (`SpatialAudioPortal`, `UniversalTriggerSpatialAudioPortal`, `MultiWindowPortal`): doors, windows, stairs, openings. A sound heard from another room goes through the cheapest of the precomputed routes between the two rooms, and the portals on the way muffle it. These routes are baked offline into `StreamingAssets/AudioBakeData/<map>.audiobakedata`: for each pair of rooms, the routes as lists of portal IDs, their cost and length. The file format is the same in SPT 4.1.6 and live 1.3.
 
-The live file can't be copied: room and portal IDs are renumbered at each bake, so the same ID points at another room in SPT's scene. `tools/extract_live_acoustics.py` therefore transcribes it:
+The live file can't be copied: room and portal IDs are renumbered at each bake, so the same ID points at another room in SPT's scene. `tools/extract_live_acoustics.py` therefore transcribes it (its header describes each step):
 
-1. It reads the active rooms and portals of the `*_Sound` scene on both sides, the ones `FindObjectsOfType` registers. The live game is IL2CPP: its components are decoded raw, following the field order of the live dump (the live `SpatialAudioRoom` serializes `roomConnections`, SPT's doesn't).
-2. It pairs each live room and portal with the SPT one at the same place (5 cm), or with the one of the same name within 1 m. Rooms are placed by their game object first: on Streets, the volume of 43 outdoor rooms is 75 m higher on the live game, at the same place. A portal left over that is the only one between the same two rooms on both sides, within 3 m, is paired too.
-3. It translates every live room pair whose two rooms and all portals have an SPT equivalent, and checks each route against the portal connections of SPT's scene (`_connectedRooms`): every portal must open on the room the route is in.
-4. In the written file, these pairs replace SPT's. Every other pair keeps SPT's routes, so no pair of the SPT file is lost. A translated pair also keeps the SPT routes that go through an opening the live scene doesn't have, or that opens on other rooms there: on Streets the live game splits the outdoor zones, and a window that leads to `City_SW_01_CommonOutdoor` in SPT leads to a smaller zone on the live game, so the live routes between that flat and the outdoor room skip it (176 m instead of 13.5 m). A pair that would exceed the buffers SPT allocates for the location (`maxRoutesCount` and `maxRoutePortalsCount` of its `SpatialAudioLocationInfo`) keeps SPT's routes too.
-5. It reads the file back and checks it: every room and portal exists in SPT's scene, the room lists cover each pair once, the maxima stay within SPT's buffers. A route that the live routes and SPT's kept routes share is written once.
-6. It writes `<file>.scene` next to the file: the size and SHA-256 of the SPT bake it started from, and the ID and world position of every room and portal the file uses.
+1. It reads the active rooms and portals of the `*_Sound` scene on both sides, and pairs each live one with the SPT one at the same place (5 cm), or of the same name within 1 m.
+2. It translates every live room pair whose two rooms and all portals have an SPT equivalent, and checks each route against the portal connections of SPT's scene.
+3. In the written file, these pairs replace SPT's. Every other pair keeps SPT's routes, so no pair of the SPT file is lost. A translated pair also keeps the SPT routes that go through an opening the live scene doesn't have or that opens on other rooms there, and a pair that would exceed the buffers SPT allocates for the location keeps SPT's routes.
+4. It reads the file back, checks it, and writes `<file>.scene` next to it: the size and SHA-256 of the SPT bake it started from, and the ID and world position of every room and portal the file uses.
 
 The method was checked on the maps that did not change: on Labyrinth and Factory, all the live pairs translate (1,195 and 5,480) and give exactly SPT's routes. Every live route is also valid in the live scene, and every SPT route in SPT's scene, except in 11 pairs of Customs.
 
@@ -310,15 +304,20 @@ The method was checked on the maps that did not change: on Labyrinth and Factory
 | The Lab | `laboratory_sound` | 211/213 | 468/471 | 6,109/6,282 | 1,132 | 13 | 0 | 24 | shipped |
 | Woods | `woods_sound` | 116/119 | 313/332 | 1,493/1,816 | 500 | 26 | 3 | 232 | shipped |
 
-"Changed" pairs have other routes or costs on the live game: the live bake drops long detours, adds others and recomputes costs. "Added" pairs have no routes in SPT's file: without a pair, the game gives the sound the maximum occlusion (score 1). "With SPT routes kept" counts the translated pairs completed as described in step 4. On Lighthouse the live bake keeps half as many routes (268,000 against 565,000): in 1,696 pairs the shortest route left is more than 2 m longer, although all its openings exist on the live game. This is the live game's choice and it is kept. The live pairs that can't be translated go through rooms or portals that only exist on the live game: Interchange, Lighthouse and Streets were reworked. `factory_sound` (old Factory) is the same file in both games. The full figures, including why each pair was not translated, are in `docs/live-acoustics-report.json`.
+"Changed" pairs have other routes or costs on the live game. "Added" pairs have no routes in SPT's file: without a pair, the game gives the sound the maximum occlusion. "With SPT routes kept" counts the translated pairs completed as described in step 3. The live pairs that can't be translated go through rooms or portals that only exist on the live game: Interchange, Lighthouse and Streets were reworked. `factory_sound` (old Factory) is the same file in both games. The full figures, including why each pair was not translated, are in `docs/live-acoustics-report.json`.
+
+Two cases explain most of the figures:
+
+- **Streets.** The live game splits the outdoor zones: a window that leads to `City_SW_01_CommonOutdoor` in SPT leads to a smaller zone there, so the live routes between that flat and the outdoor room skip it (176 m instead of 13.5 m). This is why a translated pair keeps the SPT routes through such openings. The volume of 43 outdoor rooms is also 75 m higher on the live game, at the same place: rooms are paired by their game object first.
+- **Lighthouse.** The live bake keeps half as many routes (268,000 against 565,000): in 1,696 pairs the shortest route left is more than 2 m longer, although all its openings exist on the live game. This is the live game's choice and it is kept.
 
 The plugin changes only the path given to `SpatialAudioDataLoader`, and only after a check. The game first registers the rooms and portals of the loaded scenes, then reads the bake file. Between the two, the plugin looks up every room and portal listed in `<file>.scene` among those the game registered: each must exist, at its listed position within 5 cm. If one is missing or elsewhere, the raid uses SPT's own file and the log names the first differences. A file without its `.scene` is never used, and if this patch doesn't run, the game keeps SPT's path. The game files are not modified.
 
 The routes are thus only used on the scene they were built for, whatever the version of the mod. They don't need to be generated again when the plugin changes. They need it when SPT changes the `*_Sound` scene of a map, which the check reports in the log (`the scene doesn't match`), or to take a newer live bake. A changed SPT bake with an unchanged scene only gives a warning: the file stays valid, but the pairs it keeps from SPT come from the old bake.
 
-All the propagation calculators SPT creates (`ParallelSoundPropagationCalculator`) evaluate every route of a pair and keep the cheapest: the order of the routes and their baked cost (`HeuristicCost`) don't change the result. The baked cost is only read by `SoundPropagationCalculator`, which SPT never creates. The bake settings stored at the end of the file are SPT's (the game doesn't read them), and the propagation depth still comes from SPT's location info.
+The order of the routes of a pair and their baked cost (`HeuristicCost`) don't change the result: every propagation calculator SPT creates (`ParallelSoundPropagationCalculator`) evaluates all the routes and keeps the cheapest. The baked cost is only read by `SoundPropagationCalculator`, which SPT never creates. The bake settings stored at the end of the file are SPT's (the game doesn't read them), and the propagation depth still comes from SPT's location info.
 
-**Meta XR maps and geometry.** The `.xramap` (precomputed reflections, probes in world space) and `.xrageo` (meshes for the reflection ray tracing) files are not imported. They are baked from the meshes, not from IDs, and the meshes differ: of the 565 geometry files of SPT's `StreamingAssets/Acoustics`, 278 are identical on the live game and 287 hold another mesh (other vertex and triangle counts, from a tenth to 26 times as many vertices: Streets buildings got interiors, Lab rooms were simplified). Loaded in SPT, they would reflect walls that SPT's scenes don't have. SPT's files already match its meshes.
+**Meta XR maps and geometry.** The `.xramap` and `.xrageo` files are not imported. They are baked from the meshes, not from IDs, and 287 of the 565 geometry files of SPT's `StreamingAssets/Acoustics` hold another mesh on the live game (Streets buildings got interiors, Lab rooms were simplified): loaded in SPT, they would reflect walls that SPT's scenes don't have. SPT's files already match its meshes.
 
 ### Bank replacement (`LiveBankReplacement`, `LiveBankTable`)
 
@@ -330,7 +329,7 @@ For each weapon listed in `LiveBankTable`, the plugin:
 
 The weapon is identified by the file name of its container. For an underbarrel launcher, the launcher's container counts, not that of the rifle in hand. The bundles stay loaded for the whole session, because spare weapons in the game's pools keep references to their banks. If a bundle fails, the error is logged and the weapon keeps its bank.
 
-## 6. Bundles
+## 5. Bundles
 
 | Folder under `audio/` | Content | Bundles |
 |---|---|---|
@@ -365,7 +364,7 @@ WTT-ContentBackport replaces weapon containers (M4A1, HK416, PKM…) with versio
 
 `LiveBankTable.cs` lists 77 weapons present in the live manifest whose played bank differs from the live one. The other live weapons already use the right bank. Weapons absent from the live game, like those of WTT-Armory, are not listed and keep their banks.
 
-## 7. Differences with stock SPT
+## 6. Differences with stock SPT and with the live game
 
 ### Burst sound
 
@@ -413,7 +412,7 @@ WTT-ContentBackport replaces weapon containers (M4A1, HK416, PKM…) with versio
 
 SPT's occlusion computation, the Meta XR acoustic maps and geometry, supersonic sounds and handling sounds remain the game's. Clip selection remains that of `SoundBank.PickClipsByDistance`.
 
-## 8. Deliberate deviations from the live game
+### Deliberate deviations from the live game
 
 | Topic | Live | This mod | Reason |
 |---|---|---|---|
@@ -423,7 +422,7 @@ SPT's occlusion computation, the Meta XR acoustic maps and geometry, supersonic 
 | Shot source components | Dedicated prefab, no Meta XR on the direct sound | SPT's prefab, Meta XR inactive on the direct sound | SPT doesn't have this prefab; its preset already disables Meta spatialization there |
 | `LimitRadius` and similar bank fields | Used to limit impact sounds | Ignored | SPT uses its own fixed values. They don't concern gunshots |
 
-## 9. Configuration
+## 7. Configuration
 
 File: `BepInEx/config/red.soundenginebackport.cfg` (`red.soundenginebackport.client.cfg` up to 1.0.0, moved on first start). Settings are also available from the Configuration Manager (F12).
 
@@ -476,7 +475,7 @@ Without the EFT 1.0 mixer, the groups keep SPT 4.1.6's volumes, and the real hea
 
 `Gunshots` is not concerned: its gain is applied per shot in the engine, and it keeps a range of −20 to +6 dB.
 
-## 10. Diagnostics
+## 8. Diagnostics
 
 With `DebugLogs = true`, `BepInEx/LogOutput.log` contains:
 
@@ -514,7 +513,7 @@ The SPT server reads `bundles.json` at startup: after adding a bundle, restart i
 
 **Recording an audio defect.** `RecordKey` (F10) writes the next 10 s of what the player hears, after all mixers, as a 32-bit float WAV at the output rate. This is what made it possible to find the end-of-shot click and the room tone bursts: comparing the recording to the decoded clips (correlation alignment, samples, spectrum) says more than listening tests.
 
-## 11. Building and regenerating
+## 9. Building and regenerating
 
 ### Client and server
 
@@ -527,7 +526,7 @@ export SptServer=/path/to/SPT/SPT_Runtime
 
 ### Timing tests
 
-`ShotTiming.cs` and `LiveAudioMath.cs` compile on their own in a console project, without Unity. No test project is kept in the repository for now.
+`LiveAudioMath.cs` (shot timing, pitch, filters) compiles on its own in a console project, without Unity. No test project is kept in the repository for now.
 
 ### Mixer
 
@@ -539,7 +538,7 @@ python3 tools/extract_live_mixer.py \
 
 ### Rooms, portals and routes
 
-This requires both installations, UnityPy, TypeTreeGeneratorAPI and numpy. The SPT scenes are read with type trees generated from SPT's assemblies; the live ones are decoded raw. It takes about 3 minutes:
+This requires both installations, UnityPy, TypeTreeGeneratorAPI and numpy. It takes about 3 minutes, and the output is deterministic:
 
 ```bash
 python3 tools/extract_live_acoustics.py \
@@ -549,17 +548,17 @@ python3 tools/extract_live_acoustics.py \
   --report docs/live-acoustics-report.json
 ```
 
-The output is deterministic. A map whose live routes change nothing is not written (and an old file is removed). Then run the independent check, which reads the files the way the game does and exits with 1 on any problem:
+A map whose live routes change nothing is not written (and an old file is removed). Then run the independent check, which reads the files the way the game does and exits with 1 on any problem (its header lists the checks):
 
 ```bash
 python3 tools/check_live_acoustics.py --spt "<SPT>" --data client/acoustics
 ```
 
-It checks the format and the indices the propagation job reads, that every room and portal is an active object of SPT's scene, that every new route goes through doors joining the rooms it crosses, that no SPT pair is lost, and that the `.scene` files match the installed SPT bake and scene. It was tested with broken files (unknown portal, reversed route, lost pair, moved portal): each one fails. Copy `client/acoustics` next to the plugin DLL. The live raw decoding follows the 1.3 field order: after a live update, check the room and portal fields in the dump again. The script stops on any inconsistency it finds when reading the files back.
+Copy `client/acoustics` next to the plugin DLL. The live raw decoding follows the 1.3 field order: after a live update, check the room and portal fields in the dump again.
 
 ### Coverage audit
 
-`tools/audit_live_coverage.py` is read-only. It checks that `bundles.json`, the files on disk and the table agree, that every shipped live bundle is byte-identical to the live one, that each live weapon container plays the live clips (names and sizes, per role, with the mod's bundles loaded in place of SPT's), and, with `--log`, that the banks logged as `[bank] <container>` match the table. It exits with 1 when it finds a problem. Run it after every regeneration and every live update. `--skip-weapons` runs the checks that do not need UnityPy.
+`tools/audit_live_coverage.py` is read-only. It checks that `bundles.json`, the files on disk and the table agree, that every shipped live bundle is byte-identical to the live one, that each live weapon container plays the live clips, and, with `--log`, that the banks logged as `[bank] <container>` match the table. It exits with 1 when it finds a problem. Run it after every regeneration and every live update. `--skip-weapons` runs the checks that do not need UnityPy.
 
 ```bash
 python3 tools/audit_live_coverage.py \
@@ -571,7 +570,7 @@ python3 tools/audit_live_coverage.py \
   --log "<SPT>/BepInEx/LogOutput.log"
 ```
 
-`[bank]` lines only appear with `LogShotDetails` on, and only for weapons of the table.
+`[bank]` lines only appear with `DebugLogs` on, and only for weapons of the table.
 
 ### Bundles and table
 
@@ -588,7 +587,7 @@ python3 tools/extract_live_banks.py \
 
 The tool compares the live weapon containers with those of SPT and WTT-ContentBackport, then writes the extracted bundles, `blendoptions`, `bundles.json` and `LiveBankTable.cs`. Each bundle is reread and checked: identical rewrite of objects before modification, valid references and decodable clips.
 
-## 12. Particularities and limits
+## 10. Particularities and limits
 
 - **M4A1:** its live shots are cut from the recording of the old loop. The resemblance to the old sound is normal.
 - **AA-12 suppressed bank:** it remains in loop format, even on the live game, and goes through the V1 engine.

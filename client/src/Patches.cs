@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Runtime.CompilerServices;
 using BepInEx;
+using BepInEx.Configuration;
 using BepInEx.Logging;
 using Comfort.Common;
 using EFT;
@@ -13,12 +15,13 @@ using SoundEngineBackport.LiveEngine;
 
 namespace SoundEngineBackport
 {
-    [BepInPlugin(Guid, "Sound Engine Backport", "1.1.1")]
+    [BepInPlugin(Guid, "Sound Engine Backport", Version)]
     public class Plugin : BaseUnityPlugin
     {
         // same GUID as the server mod and the Forge listing (checked by the Forge scanner)
         internal const string Guid = "red.soundenginebackport";
         private const string OldGuid = "red.soundenginebackport.client";
+        private const string Version = "1.1.1";
 
         internal static ManualLogSource Log;
         internal static string Location;
@@ -32,52 +35,28 @@ namespace SoundEngineBackport
             Location = Info.Location;
             Instance = this;
             MigrateOldConfig();
-            Config = new PluginConfig(((BaseUnityPlugin)this).Config);
-            Config.BindAndApply();
+            Config = new PluginConfig(base.Config);
             Harmony.CreateAndPatchAll(typeof(WeaponSoundPlayerPatches), Guid);
             Harmony.CreateAndPatchAll(typeof(LiveOcclusionPatch), Guid);
+            // the shot engine above stays usable without these
+            TryPatch(typeof(LiveAudioPatches), "live audio patches");
+            TryPatch(typeof(LiveAmbientPatches), "live ambient patches");
+            TryPatch(typeof(AmbientCategoryPatches), "ambient category patches");
+            TryPatch(typeof(LiveAcousticPatches), "live acoustic data patch");
+            TryPatch(typeof(SpectatorListenerPatches), "spectator listener patches");
+            Logger.LogInfo($"Sound Engine Backport v{Version} loaded (live engine port, extraMuffleStrength={Config.MuffleStrength.Value})");
+        }
+
+        private void TryPatch(Type patches, string what)
+        {
             try
             {
-                Harmony.CreateAndPatchAll(typeof(LiveAudioPatches), Guid);
+                Harmony.CreateAndPatchAll(patches, Guid);
             }
-            catch (System.Exception e)
+            catch (Exception e)
             {
-                // the shot engine above stays usable without these
-                Logger.LogError($"live audio patches failed: {e}");
+                Logger.LogError($"{what} failed: {e}");
             }
-            try
-            {
-                Harmony.CreateAndPatchAll(typeof(LiveAmbientPatches), Guid);
-            }
-            catch (System.Exception e)
-            {
-                Logger.LogError($"live ambient patches failed: {e}");
-            }
-            try
-            {
-                Harmony.CreateAndPatchAll(typeof(AmbientCategoryPatches), Guid);
-            }
-            catch (System.Exception e)
-            {
-                Logger.LogError($"ambient category patches failed: {e}");
-            }
-            try
-            {
-                Harmony.CreateAndPatchAll(typeof(LiveAcousticPatches), Guid);
-            }
-            catch (System.Exception e)
-            {
-                Logger.LogError($"live acoustic data patch failed: {e}");
-            }
-            try
-            {
-                Harmony.CreateAndPatchAll(typeof(SpectatorListenerPatches), Guid);
-            }
-            catch (System.Exception e)
-            {
-                Logger.LogError($"spectator listener patches failed: {e}");
-            }
-            Logger.LogInfo($"Sound Engine Backport v1.1.1 loaded (live engine port, extraMuffleStrength={Config.MuffleStrength.Value})");
         }
 
         /// <summary>Up to 1.0.0 the client GUID, which names the config file, was
@@ -86,17 +65,17 @@ namespace SoundEngineBackport
         {
             try
             {
-                var config = ((BaseUnityPlugin)this).Config;
-                string oldPath = System.IO.Path.Combine(BepInEx.Paths.ConfigPath, OldGuid + ".cfg");
-                if (System.IO.File.Exists(config.ConfigFilePath) || !System.IO.File.Exists(oldPath))
+                ConfigFile config = base.Config;
+                string oldPath = Path.Combine(BepInEx.Paths.ConfigPath, OldGuid + ".cfg");
+                if (File.Exists(config.ConfigFilePath) || !File.Exists(oldPath))
                 {
                     return;
                 }
-                System.IO.File.Move(oldPath, config.ConfigFilePath);
+                File.Move(oldPath, config.ConfigFilePath);
                 config.Reload();
                 Logger.LogInfo($"settings moved from {OldGuid}.cfg to {Guid}.cfg");
             }
-            catch (System.Exception e)
+            catch (Exception e)
             {
                 Logger.LogError($"could not move the settings of {OldGuid}.cfg: {e}");
             }
@@ -111,7 +90,7 @@ namespace SoundEngineBackport
                     LiveOutputRecorder.Start();
                 }
             }
-            catch (System.Exception e)
+            catch (Exception e)
             {
                 Logger.LogError($"output recorder failed: {e}");
                 enabled = false;
@@ -127,213 +106,140 @@ namespace SoundEngineBackport
         public string DispName;
     }
 
+    /// <summary>Binds the settings and pushes each value to the module that reads it, now and at
+    /// each change (the few read once, at game start, say "Restart required").</summary>
     internal sealed class PluginConfig
     {
         private const string VolumeSection = "Volume";
         private const string EngineSection = "Engine";
+        private const string OcclusionSection = "Occlusion";
+        private const string DebugSection = "Debug";
         // a source plays at 1.0 at most: the groups start at 0.75 in EFT 1.0, which leaves +2.5 dB
         private const float GroupMaxDb = 2.5f;
 
-        private readonly BepInEx.Configuration.ConfigFile _file;
+        private readonly ConfigFile _file;
 
-        internal BepInEx.Configuration.ConfigEntry<bool> LiveEngineEnabled;
-        internal BepInEx.Configuration.ConfigEntry<float> MuffleStrength;
-        internal BepInEx.Configuration.ConfigEntry<bool> LiveMixerEnabled;
-        internal BepInEx.Configuration.ConfigEntry<float> RaidVolumeDb;
-        internal BepInEx.Configuration.ConfigEntry<float> AmbientVolumeDb;
-        internal BepInEx.Configuration.ConfigEntry<float> BirdsVolumeDb;
-        internal BepInEx.Configuration.ConfigEntry<float> DogsVolumeDb;
-        internal BepInEx.Configuration.ConfigEntry<float> WildlifeVolumeDb;
-        internal BepInEx.Configuration.ConfigEntry<float> EerieVolumeDb;
-        internal BepInEx.Configuration.ConfigEntry<float> GunshotsVolumeDb;
-        internal BepInEx.Configuration.ConfigEntry<float> HandlingVolumeDb;
-        internal BepInEx.Configuration.ConfigEntry<float> ExplosionsVolumeDb;
-        internal BepInEx.Configuration.ConfigEntry<float> CharacterVolumeDb;
-        internal BepInEx.Configuration.ConfigEntry<float> ImpactsVolumeDb;
-        internal BepInEx.Configuration.ConfigEntry<bool> LiveSpatializerEnabled;
-        internal BepInEx.Configuration.ConfigEntry<bool> LiveGroupPresetsEnabled;
-        internal BepInEx.Configuration.ConfigEntry<bool> LiveOcclusionGateEnabled;
-        internal BepInEx.Configuration.ConfigEntry<bool> SpectatorListenerRoomEnabled;
-        internal BepInEx.Configuration.ConfigEntry<float> MinMuffleCutoff;
-        internal BepInEx.Configuration.ConfigEntry<float> SequenceResetBeats;
-        internal BepInEx.Configuration.ConfigEntry<float> BurstFadeBeats;
-        internal BepInEx.Configuration.ConfigEntry<bool> LiveReverbRouting;
-        internal BepInEx.Configuration.ConfigEntry<bool> PreferLiveBanks;
-        internal BepInEx.Configuration.ConfigEntry<bool> AdaptiveFadeEnabled;
-        internal BepInEx.Configuration.ConfigEntry<bool> DebugLogs;
-        internal BepInEx.Configuration.ConfigEntry<bool> LiveAmbientPortEnabled;
-        internal BepInEx.Configuration.ConfigEntry<bool> LiveDynamicHrtfEnabled;
-        internal BepInEx.Configuration.ConfigEntry<bool> LiveAcousticDataEnabled;
-        internal BepInEx.Configuration.ConfigEntry<BepInEx.Configuration.KeyboardShortcut> RecordKey;
+        internal readonly ConfigEntry<bool> LiveEngineEnabled;
+        internal readonly ConfigEntry<float> MuffleStrength;
+        internal readonly ConfigEntry<KeyboardShortcut> RecordKey;
 
         internal static bool LogShotDetails;
 
-        internal PluginConfig(BepInEx.Configuration.ConfigFile file) { _file = file; }
-
         /// <summary>Everything but the volumes: shown in F12 only with "Advanced settings" ticked.</summary>
-        private BepInEx.Configuration.ConfigEntry<T> Advanced<T>(string section, string key, T value, string description,
-            BepInEx.Configuration.AcceptableValueBase range = null)
+        private ConfigEntry<T> Advanced<T>(string section, string key, T value, string description)
         {
-            return _file.Bind(section, key, value, new BepInEx.Configuration.ConfigDescription(description, range,
+            return _file.Bind(section, key, value, new ConfigDescription(description, null,
                 new ConfigurationManagerAttributes { IsAdvanced = true }));
         }
 
-        private BepInEx.Configuration.ConfigEntry<float> Volume(string key, string name, int order, float value, float min, float max,
-            string description)
+        private ConfigEntry<float> Volume(string key, string name, int order, float value, float min, float max, string description)
         {
-            return _file.Bind(VolumeSection, key, value, new BepInEx.Configuration.ConfigDescription(description,
-                new BepInEx.Configuration.AcceptableValueRange<float>(min, max),
+            return _file.Bind(VolumeSection, key, value, new ConfigDescription(description,
+                new AcceptableValueRange<float>(min, max),
                 new ConfigurationManagerAttributes { DispName = name, Order = order }));
         }
 
-        /// <summary>Isolated ambient sounds: 0 dB leaves the game as it is, the lowest value turns them off.</summary>
-        private BepInEx.Configuration.ConfigEntry<float> AnimalVolume(string key, string name, int order, string description)
+        /// <summary>Volume of a sound group: scales its preset, which sources read at each play.</summary>
+        private void GroupVolume(string key, string name, int order, string group, string description)
         {
-            return Volume(key, name, order, 0f, AmbientSoundCategories.MuteDb, 0f, description);
+            Apply(Volume(key, name, order, 0f, -20f, GroupMaxDb, description), db => LiveGroupPresets.SetTrim(group, db));
         }
 
-        internal void BindAndApply()
+        /// <summary>Isolated ambient sounds: 0 dB leaves the game as it is, the lowest value turns them off.</summary>
+        private void AnimalVolume(string key, string name, int order, AmbientCategory category, string description)
         {
-            RaidVolumeDb = Volume("RaidVolumeDb", "Raid volume (all sounds)", 70, 0f, -12f, 6f,
-                "Volume of all raid sounds. The sliders below add to it. 0 = SPT 4.1.6 level, 4 = EFT 1.0 mixer default (may clip).");
-            AmbientVolumeDb = Volume("AmbientVolumeDb", "Ambience (rain, wind, day/night)", 60, -4f, -20f, 6f,
-                "Background ambience only: rain, wind, day and night.");
-            BirdsVolumeDb = AnimalVolume("BirdsVolumeDb", "Birds", 59,
+            Apply(Volume(key, name, order, 0f, AmbientSoundCategories.MuteDb, 0f, description),
+                db => AmbientSoundCategories.SetTrimDb(category, db))
+                .SettingChanged += (_, __) => AmbientSoundCategories.Refresh();
+        }
+
+        /// <summary>Pushes the value of a setting now and at each change.</summary>
+        private static ConfigEntry<T> Apply<T>(ConfigEntry<T> entry, Action<T> apply)
+        {
+            apply(entry.Value);
+            entry.SettingChanged += (_, __) => apply(entry.Value);
+            return entry;
+        }
+
+        // the settings of a section are written to the .cfg file in the order they are bound
+        internal PluginConfig(ConfigFile file)
+        {
+            _file = file;
+            Apply(Volume("RaidVolumeDb", "Raid volume (all sounds)", 70, 0f, -12f, 6f,
+                "Volume of all raid sounds. The sliders below add to it. 0 = SPT 4.1.6 level, 4 = EFT 1.0 mixer default (may clip)."),
+                db => LiveMixer.WorldVolumeDb = db).SettingChanged += (_, __) => LiveMixer.ApplyWorldVolume();
+            Apply(Volume("AmbientVolumeDb", "Ambience (rain, wind, day/night)", 60, -4f, -20f, 6f,
+                "Background ambience only: rain, wind, day and night."),
+                db => LiveMixer.AmbientTrimDb = db).SettingChanged += (_, __) => LiveMixer.ApplyAmbientVolume();
+            AnimalVolume("BirdsVolumeDb", "Birds", 59, AmbientCategory.Birds,
                 "Birdsong, crows, owls and birds of prey, on every map. Lowest = off. Applied live.");
-            DogsVolumeDb = AnimalVolume("DogsVolumeDb", "Dogs and wolves", 58,
+            AnimalVolume("DogsVolumeDb", "Dogs and wolves", 58, AmbientCategory.DogsAndWolves,
                 "Barking and howling in the distance. Lowest = off. Applied live.");
-            WildlifeVolumeDb = AnimalVolume("WildlifeVolumeDb", "Frogs, bats, insects and rats", 57,
+            AnimalVolume("WildlifeVolumeDb", "Frogs, bats, insects and rats", 57, AmbientCategory.SmallWildlife,
                 "Small animals: frogs, bats, crickets, flies and rats. Lowest = off. Applied live.");
-            EerieVolumeDb = AnimalVolume("EerieVolumeDb", "Eerie sounds", 56,
+            AnimalVolume("EerieVolumeDb", "Eerie sounds", 56, AmbientCategory.Eerie,
                 "Far-off scrapes, metal and wood creaks, ghostly tones and zombie groans. Lowest = off. Applied live.");
-            GunshotsVolumeDb = Volume("GunshotsVolumeDb", "Gunshots", 50, 0f, -20f, 6f,
-                "All gunshots, yours and others'. 0 = EFT 1.0 level.");
-            HandlingVolumeDb = Volume("HandlingVolumeDb", "Weapon handling", 40, 0f, -20f, GroupMaxDb,
+            // scaled by the engine at each shot, where the other groups go through their preset
+            Apply(Volume("GunshotsVolumeDb", "Gunshots", 50, 0f, -20f, 6f,
+                "All gunshots, yours and others'. 0 = EFT 1.0 level."),
+                db => LiveMixer.GunshotGain = LiveAudioMath.DbToGain(db));
+            GroupVolume("HandlingVolumeDb", "Weapon handling", 40, "Weaponary",
                 "Reloads, magazines and fire mode switches. 0 = EFT 1.0 level.");
-            ExplosionsVolumeDb = Volume("ExplosionsVolumeDb", "Explosions", 30, 0f, -20f, GroupMaxDb,
+            GroupVolume("ExplosionsVolumeDb", "Explosions", 30, "Grenades",
                 "Grenades and explosions. 0 = EFT 1.0 level.");
-            CharacterVolumeDb = Volume("CharacterVolumeDb", "Footsteps and gear", 20, 0f, -20f, GroupMaxDb,
+            GroupVolume("CharacterVolumeDb", "Footsteps and gear", 20, "Character",
                 "Footsteps and gear of every character. 0 = EFT 1.0 level.");
-            ImpactsVolumeDb = Volume("ImpactsVolumeDb", "Bullet impacts", 10, 0f, -20f, GroupMaxDb,
+            GroupVolume("ImpactsVolumeDb", "Bullet impacts", 10, "Impacts",
                 "Bullet impacts. 0 = EFT 1.0 level.");
 
             LiveEngineEnabled = Advanced(EngineSection, "LiveEngineEnabled", true,
                 "EFT 1.0 gunshot engine. Off = the simple one-shot playback of mod v1.");
-            MuffleStrength = Advanced("Occlusion", "ExtraMuffleStrength", 0f,
-                "Extra muffling of distant sounds behind walls, not in EFT 1.0. 0 = none, 1 = strongest.");
-            LiveMixerEnabled = Advanced(EngineSection, "LiveMixerEnabled", true,
-                "EFT 1.0 audio mixer, for all sounds. The raid and ambience volumes need it. Restart required.");
-            LiveGroupPresetsEnabled = Advanced(EngineSection, "LiveGroupPresetsEnabled", true,
-                "EFT 1.0 distance curves and volumes of all sound types. Off = SPT 4.1.6 values. Restart required.");
-            LiveOcclusionGateEnabled = Advanced("Occlusion", "LiveOcclusionGateEnabled", true,
-                "Keeps a sound silent until the game knows if a wall blocks it, like EFT 1.0. Off = SPT 4.1.6, where it can leak through walls.");
-            SpectatorListenerRoomEnabled = Advanced("Occlusion", "SpectatorListenerRoomEnabled", true,
-                "Fika spectator: walls and rooms are heard from the camera, not from your extracted or dead body.");
-            LiveSpatializerEnabled = Advanced(EngineSection, "LiveSpatializerEnabled", true,
-                "Filters other players' gunshots by direction, like EFT 1.0. Applies to weapons that have not fired yet.");
-            MinMuffleCutoff = Advanced("Occlusion", "MinMuffleCutoffHz", 500f,
-                "Strongest muffling behind walls, as a cutoff frequency in Hz. Lower = more muffled.");
-            SequenceResetBeats = Advanced(EngineSection, "SequenceResetBeats", 4f,
-                "Pause between two shots, in beats, that ends a burst.");
-            BurstFadeBeats = Advanced(EngineSection, "BurstFadeBeats", 4f,
-                "Fade of a shot when the next one starts, in beats (0.25 s at most).");
-            AdaptiveFadeEnabled = Advanced(EngineSection, "AdaptiveFadeEnabled", true,
-                "Longer fade when a shot comes early, like EFT 1.0.");
-            LiveReverbRouting = Advanced(EngineSection, "LiveReverbRouting", true,
-                "EFT 1.0 reverb rule: on for your shots and indoor shots, off for distant outdoor shots. Off = SPT 4.1.6 behaviour.");
-            PreferLiveBanks = Advanced(EngineSection, "PreferLiveBanks", true,
-                "Use this mod's EFT 1.0 gun sounds instead of those of WTT-ContentBackport. Applies to new weapons.");
-            DebugLogs = Advanced("Debug", "DebugLogs", false, "Detailed log of every shot.");
-            LiveAmbientPortEnabled = Advanced(EngineSection, "LiveAmbientPortEnabled", true,
-                "EFT 1.0 ambience: fades, indoor rain, effects cut indoors. Off = SPT 4.1.6 values. Applies at the next raid.");
-            LiveDynamicHrtfEnabled = Advanced(EngineSection, "LiveDynamicHrtfEnabled", true,
-                "EFT 1.0 3D audio (HRTF) on handling, collision, window and door sounds. Off = SPT 4.1.6, switched on and off by distance.");
-            RecordKey = Advanced("Debug", "RecordKey", new BepInEx.Configuration.KeyboardShortcut(KeyCode.F10),
+            MuffleStrength = Apply(Advanced(OcclusionSection, "ExtraMuffleStrength", 0f,
+                "Extra muffling of distant sounds behind walls, not in EFT 1.0. 0 = none, 1 = strongest."),
+                v => LiveOcclusionModule.MuffleStrength = v);
+            LiveMixer.Enabled = Advanced(EngineSection, "LiveMixerEnabled", true,
+                "EFT 1.0 audio mixer, for all sounds. The raid and ambience volumes need it. Restart required.").Value;
+            LiveGroupPresets.Enabled = Advanced(EngineSection, "LiveGroupPresetsEnabled", true,
+                "EFT 1.0 distance curves and volumes of all sound types. Off = SPT 4.1.6 values. Restart required.").Value;
+            Apply(Advanced(OcclusionSection, "LiveOcclusionGateEnabled", true,
+                "Keeps a sound silent until the game knows if a wall blocks it, like EFT 1.0. Off = SPT 4.1.6, where it can leak through walls."),
+                v => LiveOcclusionGate.Enabled = v);
+            Apply(Advanced(OcclusionSection, "SpectatorListenerRoomEnabled", true,
+                "Fika spectator: walls and rooms are heard from the camera, not from your extracted or dead body."),
+                v => SpectatorListenerRoom.Enabled = v);
+            LiveFilterBlend.Enabled = Advanced(EngineSection, "LiveSpatializerEnabled", true,
+                "Filters other players' gunshots by direction, like EFT 1.0. Applies to weapons that have not fired yet.").Value;
+            Apply(Advanced(OcclusionSection, "MinMuffleCutoffHz", 500f,
+                "Strongest muffling behind walls, as a cutoff frequency in Hz. Lower = more muffled."),
+                v => LiveOcclusionModule.MinCutoffFrequency = Mathf.Clamp(v, 100f, 8000f));
+            Apply(Advanced(EngineSection, "SequenceResetBeats", 4f,
+                "Pause between two shots, in beats, that ends a burst."),
+                v => LiveWeaponSoundEngine.SharedPlayback.FireLoopBreakMultiplier = v);
+            Apply(Advanced(EngineSection, "BurstFadeBeats", 4f,
+                "Fade of a shot when the next one starts, in beats (0.25 s at most)."),
+                v => LiveWeaponSoundEngine.SharedPlayback.BurstFireFadeMultiplier = v);
+            Apply(Advanced(EngineSection, "AdaptiveFadeEnabled", true,
+                "Longer fade when a shot comes early, like EFT 1.0."),
+                v => LiveWeaponSoundEngine.SharedPlayback.AdaptiveFadeEnabled = v);
+            Apply(Advanced(EngineSection, "LiveReverbRouting", true,
+                "EFT 1.0 reverb rule: on for your shots and indoor shots, off for distant outdoor shots. Off = SPT 4.1.6 behaviour."),
+                v => LiveWeaponSoundEngine.ApplyReverbRouting = v);
+            Apply(Advanced(EngineSection, "PreferLiveBanks", true,
+                "Use this mod's EFT 1.0 gun sounds instead of those of WTT-ContentBackport. Applies to new weapons."),
+                v => LiveBankReplacement.Enabled = v);
+            Apply(Advanced(DebugSection, "DebugLogs", false, "Detailed log of every shot."),
+                v => LogShotDetails = LiveOcclusionModule.LogCutoffChanges = v);
+            Apply(Advanced(EngineSection, "LiveAmbientPortEnabled", true,
+                "EFT 1.0 ambience: fades, indoor rain, effects cut indoors. Off = SPT 4.1.6 values. Applies at the next raid."),
+                v => LiveAmbientPort.Enabled = v);
+            Apply(Advanced(EngineSection, "LiveDynamicHrtfEnabled", true,
+                "EFT 1.0 3D audio (HRTF) on handling, collision, window and door sounds. Off = SPT 4.1.6, switched on and off by distance."),
+                v => LiveDynamicHrtf.Enabled = v);
+            RecordKey = Advanced(DebugSection, "RecordKey", new KeyboardShortcut(KeyCode.F10),
                 "Records 10 seconds of game audio to BepInEx/seb_record_<time>.wav, to report a sound bug.");
-            LiveDynamicHrtf.Enabled = LiveDynamicHrtfEnabled.Value;
-            LiveDynamicHrtfEnabled.SettingChanged += (_, __) => LiveDynamicHrtf.Enabled = LiveDynamicHrtfEnabled.Value;
-            LiveAmbientPort.Enabled = LiveAmbientPortEnabled.Value;
-            LiveAmbientPortEnabled.SettingChanged += (_, __) => LiveAmbientPort.Enabled = LiveAmbientPortEnabled.Value;
-            LiveAcousticDataEnabled = Advanced(EngineSection, "LiveAcousticDataEnabled", true,
-                "EFT 1.0 sound routes between the rooms of each map (through doors, windows, stairs), transcribed into SPT's maps. Off = SPT 4.1.6 routes. Applies at the next raid.");
-            LiveAcousticData.Enabled = LiveAcousticDataEnabled.Value;
-            LiveAcousticDataEnabled.SettingChanged += (_, __) => LiveAcousticData.Enabled = LiveAcousticDataEnabled.Value;
-
-            LiveOcclusionModule.MuffleStrength = MuffleStrength.Value;
-            LiveMixer.Enabled = LiveMixerEnabled.Value;
-            LiveMixer.WorldVolumeDb = RaidVolumeDb.Value;
-            LiveMixer.AmbientTrimDb = AmbientVolumeDb.Value;
-            AmbientVolumeDb.SettingChanged += (_, __) =>
-            {
-                LiveMixer.AmbientTrimDb = AmbientVolumeDb.Value;
-                LiveMixer.ApplyAmbientVolume();
-            };
-            RaidVolumeDb.SettingChanged += (_, __) =>
-            {
-                LiveMixer.WorldVolumeDb = RaidVolumeDb.Value;
-                LiveMixer.ApplyWorldVolume();
-            };
-            ApplyVolumeTrims();
-            ApplyAmbientCategories();
-            foreach (var trim in new[] { BirdsVolumeDb, DogsVolumeDb, WildlifeVolumeDb, EerieVolumeDb })
-            {
-                trim.SettingChanged += (_, __) =>
-                {
-                    ApplyAmbientCategories();
-                    AmbientSoundCategories.Refresh();
-                };
-            }
-            foreach (var trim in new[] { GunshotsVolumeDb, HandlingVolumeDb, ExplosionsVolumeDb, CharacterVolumeDb, ImpactsVolumeDb })
-            {
-                trim.SettingChanged += (_, __) => ApplyVolumeTrims();
-            }
-            LiveFilterBlend.Enabled = LiveSpatializerEnabled.Value;
-            LiveGroupPresets.Enabled = LiveGroupPresetsEnabled.Value;
-            LiveOcclusionGate.Enabled = LiveOcclusionGateEnabled.Value;
-            LiveOcclusionGateEnabled.SettingChanged += (_, __) => LiveOcclusionGate.Enabled = LiveOcclusionGateEnabled.Value;
-            SpectatorListenerRoom.Enabled = SpectatorListenerRoomEnabled.Value;
-            SpectatorListenerRoomEnabled.SettingChanged += (_, __) => SpectatorListenerRoom.Enabled = SpectatorListenerRoomEnabled.Value;
-            LiveOcclusionModule.MinCutoffFrequency = Mathf.Clamp(MinMuffleCutoff.Value, 100f, 8000f);
-            ApplyEngineSettings();
-
-            MuffleStrength.SettingChanged += (_, __) => LiveOcclusionModule.MuffleStrength = MuffleStrength.Value;
-            MinMuffleCutoff.SettingChanged += (_, __) => LiveOcclusionModule.MinCutoffFrequency = Mathf.Clamp(MinMuffleCutoff.Value, 100f, 8000f);
-            SequenceResetBeats.SettingChanged += (_, __) => ApplyEngineSettings();
-            BurstFadeBeats.SettingChanged += (_, __) => ApplyEngineSettings();
-            AdaptiveFadeEnabled.SettingChanged += (_, __) => ApplyEngineSettings();
-            LiveReverbRouting.SettingChanged += (_, __) => ApplyEngineSettings();
-            PreferLiveBanks.SettingChanged += (_, __) => ApplyEngineSettings();
-            DebugLogs.SettingChanged += (_, __) => ApplyEngineSettings();
-        }
-
-        /// <summary>Shots are scaled by the engine at each shot, the other groups through their
-        /// preset, which sources read at each play: all apply during a raid.</summary>
-        private void ApplyVolumeTrims()
-        {
-            LiveMixer.GunshotGain = LiveAudioMath.DbToGain(GunshotsVolumeDb.Value);
-            LiveGroupPresets.SetTrim("Weaponary", HandlingVolumeDb.Value);
-            LiveGroupPresets.SetTrim("Grenades", ExplosionsVolumeDb.Value);
-            LiveGroupPresets.SetTrim("Character", CharacterVolumeDb.Value);
-            LiveGroupPresets.SetTrim("Impacts", ImpactsVolumeDb.Value);
-        }
-
-        private void ApplyAmbientCategories()
-        {
-            AmbientSoundCategories.SetTrimDb(AmbientCategory.Birds, BirdsVolumeDb.Value);
-            AmbientSoundCategories.SetTrimDb(AmbientCategory.DogsAndWolves, DogsVolumeDb.Value);
-            AmbientSoundCategories.SetTrimDb(AmbientCategory.SmallWildlife, WildlifeVolumeDb.Value);
-            AmbientSoundCategories.SetTrimDb(AmbientCategory.Eerie, EerieVolumeDb.Value);
-        }
-
-        private void ApplyEngineSettings()
-        {
-            LogShotDetails = DebugLogs.Value;
-            LiveOcclusionModule.LogCutoffChanges = DebugLogs.Value;
-            LiveWeaponSoundEngine.SharedPlayback.FireLoopBreakMultiplier = SequenceResetBeats.Value;
-            LiveWeaponSoundEngine.SharedPlayback.BurstFireFadeMultiplier = BurstFadeBeats.Value;
-            LiveWeaponSoundEngine.SharedPlayback.AdaptiveFadeEnabled = AdaptiveFadeEnabled.Value;
-            LiveWeaponSoundEngine.ApplyReverbRouting = LiveReverbRouting.Value;
-            LiveBankReplacement.Enabled = PreferLiveBanks.Value;
+            Apply(Advanced(EngineSection, "LiveAcousticDataEnabled", true,
+                "EFT 1.0 sound routes between the rooms of each map (through doors, windows, stairs), transcribed into SPT's maps. Off = SPT 4.1.6 routes. Applies at the next raid."),
+                v => LiveAcousticData.Enabled = v);
         }
     }
 
@@ -345,8 +251,6 @@ namespace SoundEngineBackport
     /// </summary>
     public static class WeaponSoundPlayerPatches
     {
-        private const float SoundSpeed = 340.29f;
-
         private static readonly ConditionalWeakTable<WeaponSoundPlayer, V1State> V1States =
             new ConditionalWeakTable<WeaponSoundPlayer, V1State>();
 
@@ -360,9 +264,16 @@ namespace SoundEngineBackport
 
         private static V1State S(WeaponSoundPlayer player) => V1States.GetOrCreateValue(player);
 
-        private static BaseSoundPlayer.IObserverToPlayerBridge Bridge(WeaponSoundPlayer player)
+        private static BaseSoundPlayer.IObserverToPlayerBridge Bridge(WeaponSoundPlayer player) => LiveWeaponSoundEngine.BridgeRef(player);
+
+        /// <summary>Clips of a bank at this distance; returns the length of the longest one.</summary>
+        private static float PickClips(SoundBank bank, EnvironmentType environment, float distance,
+            out AudioClip clip, out AudioClip clip2, ref float balance)
         {
-            return Traverse.Create(player).Field("playersBridge").GetValue<BaseSoundPlayer.IObserverToPlayerBridge>();
+            clip = null;
+            clip2 = null;
+            bank.PickClipsByDistance(ref clip, ref clip2, ref balance, (int)environment, distance);
+            return Mathf.Max(clip != null ? clip.length : 0f, clip2 != null ? clip2.length : 0f);
         }
 
         private static bool IsLoopClip(AudioClip clip)
@@ -518,7 +429,7 @@ namespace SoundEngineBackport
                 {
                     // ---- live engine path (v2.0) ----
                     LiveWeaponSoundEngine.GetOrCreate(__instance)
-                        .FireBullet(ammo, shotPosition, shotDirection, pitchMult, multiShot, burstOf2Start);
+                        .FireBullet(bank, ammo, shotPosition, shotDirection, pitchMult, burstOf2Start);
                     return false;
                 }
 
@@ -617,7 +528,7 @@ namespace SoundEngineBackport
             // and burst the salve is one bullet, ended at once like a released trigger (the live
             // engine sends these modes to its single-shot emitter the same way).
             bool triggerReleased = !bridge.isWeaponTriggerPressed || malfunctioned || burstOf2Start
-                || !IsContinuousMode(bridge);
+                || !LiveWeaponSoundEngine.IsContinuousMode(bridge.Weapon as Weapon);
 
             if (isFiring && queue != null)
             {
@@ -666,10 +577,8 @@ namespace SoundEngineBackport
             queue.SetMixerGroup(t.Field("_currentMixerGroup").GetValue<AudioMixerGroup>());
             queue.EnableStereo(firstPerson);
 
-            AudioClip clip = null;
-            AudioClip clip2 = null;
             float balance = 1f;
-            soundBank.PickClipsByDistance(ref clip, ref clip2, ref balance, (int)environment, distance);
+            float length = PickClips(soundBank, environment, distance, out AudioClip clip, out AudioClip clip2, ref balance);
             t.Field("_balance").SetValue(balance);
             t.Field("_pitch").SetValue(pitchMult);
             t.Field("_prevPitchMult").SetValue(pitchMult);
@@ -678,8 +587,7 @@ namespace SoundEngineBackport
             bool unnamedLoop = isAuto && (ShapeOf(soundBank) & BankShape.SingleVariantSameLength) != 0;
             state.LoopMode = unnamedLoop || IsLoopClip(clip) || IsLoopClip(clip2);
             state.LoopClip = IsLoopClip(clip) || (unnamedLoop && clip != null) ? clip : clip2;
-            float length = Mathf.Max(clip != null ? clip.length : 0f, clip2 != null ? clip2.length : 0f);
-            float delay = distance / SoundSpeed;
+            float delay = distance / LiveWeaponSoundEngine.SoundSpeed;
             double startFire = AudioSettings.dspTime;
             t.Field("_delay").SetValue(delay);
             t.Field("_startFire").SetValue(startFire);
@@ -727,16 +635,6 @@ namespace SoundEngineBackport
             __instance.FireSonicSound(delay, soundBank.Rolloff, ammo, shotPosition, shotDirection);
         }
 
-        /// <summary>True when one trigger pull fires several bullets (fullauto, burst), as in
-        /// LiveWeaponSoundEngine. Unknown weapons keep SPT's trigger-driven behaviour.</summary>
-        private static bool IsContinuousMode(BaseSoundPlayer.IObserverToPlayerBridge bridge)
-        {
-            Weapon weapon = bridge.Weapon as Weapon;
-            return weapon == null
-                || weapon.SelectedFireMode == Weapon.EFireMode.fullauto
-                || weapon.SelectedFireMode == Weapon.EFireMode.burst;
-        }
-
         private static void EnqueueOneShot(
             WeaponSoundPlayer __instance,
             SuperBetterAudioQueue queue,
@@ -745,13 +643,8 @@ namespace SoundEngineBackport
             EnvironmentType environment,
             V1State state)
         {
-            AudioClip clip = null;
-            AudioClip clip2 = null;
             float balance = 1f;
-            float distance = __instance.Distance;
-            soundBank.PickClipsByDistance(ref clip, ref clip2, ref balance, (int)environment, distance);
-
-            float length = Mathf.Max(clip != null ? clip.length : 0f, clip2 != null ? clip2.length : 0f);
+            float length = PickClips(soundBank, environment, __instance.Distance, out AudioClip clip, out AudioClip clip2, ref balance);
             if (length <= 0f)
             {
                 return;
@@ -855,12 +748,9 @@ namespace SoundEngineBackport
             SoundBank tail = __instance.IsSilenced ? __instance.TailSilenced : __instance.Tail;
             if (tail != null)
             {
-                AudioClip clip = null;
-                AudioClip clip2 = null;
                 float balance = t.Field("_balance").GetValue<float>();
-                tail.PickClipsByDistance(ref clip, ref clip2, ref balance, (int)Bridge(__instance).Environment, __instance.Distance);
+                tailLength = PickClips(tail, Bridge(__instance).Environment, __instance.Distance, out AudioClip clip, out AudioClip clip2, ref balance);
                 t.Field("_balance").SetValue(balance);
-                tailLength = Mathf.Max(clip != null ? clip.length : 0f, clip2 != null ? clip2.length : 0f);
                 t.Field("_queue").GetValue<SuperBetterAudioQueue>()?.Enqueue(clip, clip2, balance, tailStart, ClipTime(tailLength, pitch), tail.BaseVolume * LiveMixer.GunshotGain, pitch);
             }
 
@@ -909,11 +799,8 @@ namespace SoundEngineBackport
                 return;
             }
 
-            AudioClip clip3 = null;
-            AudioClip clip4 = null;
             float balance = 1f;
-            tail.PickClipsByDistance(ref clip3, ref clip4, ref balance, (int)environment, __instance.Distance);
-            float tailLength = Mathf.Max(clip3 != null ? clip3.length : 0f, clip4 != null ? clip4.length : 0f);
+            float tailLength = PickClips(tail, environment, __instance.Distance, out AudioClip clip3, out AudioClip clip4, ref balance);
             // the salve is already over: one bullet, or two for a 2-round burst, whose second
             // shot plays no sound of its own (SPT plays two beats for it; up to 1.0.1 this
             // played one, so a 2-round burst sounded like a single shot). The quietest gap
@@ -1067,14 +954,14 @@ namespace SoundEngineBackport
         [HarmonyPrefix]
         public static bool SetLowPassPrefix(BetterSource __instance, float cutoffFreq, float targetQ, bool applyImmediately)
         {
-            return !LiveFilterBlend.TryInterceptLowPass(__instance, cutoffFreq, targetQ, applyImmediately);
+            return !LiveFilterBlend.TryIntercept(__instance, true, cutoffFreq, targetQ, applyImmediately);
         }
 
         [HarmonyPatch(typeof(BetterSource), "SetHighPassFilterParameters")]
         [HarmonyPrefix]
         public static bool SetHighPassPrefix(BetterSource __instance, float cutoffFreq, float targetQ, bool applyImmediately)
         {
-            return !LiveFilterBlend.TryInterceptHighPass(__instance, cutoffFreq, targetQ, applyImmediately);
+            return !LiveFilterBlend.TryIntercept(__instance, false, cutoffFreq, targetQ, applyImmediately);
         }
     }
 }
