@@ -73,6 +73,7 @@ namespace SoundEngineBackport
                 return null;
             }
             Analysis analysis = null;
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
                 analysis = Analyze(clip);
@@ -82,6 +83,12 @@ namespace SoundEngineBackport
                 Plugin.Log.LogWarning($"could not read the loop clip {clip.name}, grid cut kept: {e.Message}");
             }
             Cache[id] = analysis;
+            if (PluginConfig.LogShotDetails)
+            {
+                double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                Plugin.Log.LogWarning($"[gaps] {clip.name} {clip.length:F2}s {clip.channels}ch {clip.frequency}Hz " +
+                    $"load={clip.loadType} gaps={(analysis != null ? analysis.GapTimes.Length : -1)} analyze={ms:F3}ms");
+            }
             return analysis;
         }
 

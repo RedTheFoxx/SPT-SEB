@@ -140,7 +140,7 @@ Detailed sequence of a shot through the live engine:
 | Prefix of `SpatialAudioDataLoader.LoadBakeDataAsync` | Checks the scene's rooms and portals, then gives the game the live file, or SPT's if the check fails |
 | Postfix of `SpatialAudioDataLoader.DataLoadedHandler` | Logs what the game loaded |
 
-`IsLegacyBank` classifies a bank as old if one of its clips contains `loop` (any case, some WTT-Armory clips have no underscore) without containing `tail`. The result is cached per bank, because reading clip names on every bullet would be costly.
+`IsLegacyBank` classifies a bank as old if one of its clips contains `loop` (any case, some WTT-Armory clips have no underscore) without containing `tail`. On an automatic weapon, a bank with one clip per distance layer, all of the same length (within 5 %), is old too: SPT always loops the Body of an automatic weapon, while live banks hold up to 8 variants per layer. MassiveSoftWeapons names its loops without `loop` (SCAR/ISOH `scar_h_outdoor_close`, MCW, QBZ-03, Grau, QBZ-97, DG-56, TR-75/76), and the live engine played the whole 1.2 to 1.7 s loop for every bullet, a burst for each semi shot. Single-variant live banks (bolt-actions, pistols, the PD flare) sit on non-automatic weapons and stay live. The shape of each bank is cached, because reading its clips on every bullet would be costly; `DebugLogs` writes it as a `[bank]` line.
 
 ### V1 engine
 
@@ -593,6 +593,7 @@ The tool compares the live weapon containers with those of SPT and WTT-ContentBa
 - **M4A1:** its live shots are cut from the recording of the old loop. The resemblance to the old sound is normal.
 - **AA-12 suppressed bank:** it remains in loop format, even on the live game, and goes through the V1 engine.
 - **WTT-Armory weapons:** they keep their banks, including loop format for some.
+- **MassiveSoftWeapons:** its weapons keep their banks. Its automatic weapons use the loop format, played by the V1 engine.
 - **Metal impacts:** the `metal_thick` bank from WTT-ContentBackport carries to 200 m, against 100 to 130 m for other surfaces.
 - **`weapons/generic` bundle:** it also differs from the live game but is not replaced, because its clips are referenced by SPT's containers.
 - **Prefabs loaded after the mixer:** `resources.assets` prefabs loaded after the mixer is installed, like the BTR radio, are not moved by the routing sweep.

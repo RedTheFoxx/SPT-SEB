@@ -384,43 +384,110 @@ namespace SoundEngineBackport
                 && name.IndexOf("tail", StringComparison.OrdinalIgnoreCase) < 0;
         }
 
-        private static readonly Dictionary<int, bool> LegacyBanks = new Dictionary<int, bool>();
+        [Flags]
+        private enum BankShape
+        {
+            None = 0,
+            // a clip is named as a loop body ("loop", not "tail")
+            LoopNames = 1,
+            // one clip per distance layer, all of the same length (5 %)
+            SingleVariantSameLength = 2,
+        }
+
+        /// <summary>Largest length spread between the clips of a single-variant bank still
+        /// read as one loop. MassiveSoft's ISOH 308 silenced bank mixes the SCAR-H (1.655 s)
+        /// and SCAR-L (1.6 s) loops: 3.4 %.</summary>
+        private const float SameLengthTolerance = 0.05f;
+
+        private static readonly Dictionary<int, BankShape> BankShapes = new Dictionary<int, BankShape>();
 
         /// <summary>True when the bank uses the old SPT format (loop clips). Asked for every
-        /// bullet, and reading clip names is costly: scanned once per bank.</summary>
-        private static bool IsLegacyBank(SoundBank bank)
+        /// bullet, and reading clip names is costly: scanned once per bank.
+        /// <para>SPT always loops the Body of an automatic weapon, so a single-variant bank
+        /// whose clips share one length is a loop there even when no clip says "loop":
+        /// MassiveSoft's SCAR (ISOH), MCW, QBZ-03, Grau, QBZ-97, DG-56 and TR-75/76 name
+        /// theirs "scar_h_outdoor_close", "556_outdoor_close"... The live engine played the
+        /// whole 1.2-1.7 s loop for every bullet: a burst for each semi shot. Live banks hold
+        /// up to 8 variants per layer; the single-variant live banks (bolt-actions, pistols,
+        /// the PD flare) are on non-automatic weapons, and their one-shots stay live.</para></summary>
+        private static bool IsLegacyBank(SoundBank bank, WeaponSoundPlayer player)
         {
             if (bank == null || bank.Environments == null || bank.Environments.Length == 0)
             {
                 return true;
             }
-            int id = bank.GetInstanceID();
-            if (!LegacyBanks.TryGetValue(id, out bool legacy))
-            {
-                legacy = ScanForLoopClips(bank);
-                LegacyBanks[id] = legacy;
-            }
-            return legacy;
+            BankShape shape = ShapeOf(bank);
+            return (shape & BankShape.LoopNames) != 0
+                || ((shape & BankShape.SingleVariantSameLength) != 0 && player != null && player.IsAutoWeapon);
         }
 
-        private static bool ScanForLoopClips(SoundBank bank)
+        private static BankShape ShapeOf(SoundBank bank)
         {
+            int id = bank.GetInstanceID();
+            if (!BankShapes.TryGetValue(id, out BankShape shape))
+            {
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                shape = ScanBank(bank);
+                BankShapes[id] = shape;
+                if (PluginConfig.LogShotDetails)
+                {
+                    double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                    Plugin.Log.LogWarning($"[bank] {bank.name} shape={shape} scan={ms:F3}ms");
+                }
+            }
+            return shape;
+        }
+
+        private static BankShape ScanBank(SoundBank bank)
+        {
+            bool loopNames = false;
+            bool singleVariant = true;
+            int count = 0;
+            float min = float.MaxValue;
+            float max = 0f;
             for (int e = 0; e < bank.Environments.Length; e++)
             {
                 var variety = bank.Environments[e];
+                if (variety == null)
+                {
+                    continue;
+                }
                 for (int d = 0; d < variety.Length; d++)
                 {
                     var clips = variety[d].Clips;
+                    if (clips == null)
+                    {
+                        continue;
+                    }
+                    int inLayer = 0;
                     for (int i = 0; i < clips.Length; i++)
                     {
-                        if (IsLoopClip(clips[i]))
+                        AudioClip clip = clips[i];
+                        if (clip == null)
                         {
-                            return true;
+                            continue;
                         }
+                        inLayer++;
+                        if (IsLoopClip(clip))
+                        {
+                            loopNames = true;
+                        }
+                        count++;
+                        min = Mathf.Min(min, clip.length);
+                        max = Mathf.Max(max, clip.length);
+                    }
+                    if (inLayer > 1)
+                    {
+                        singleVariant = false;
                     }
                 }
             }
-            return false;
+            BankShape shape = loopNames ? BankShape.LoopNames : BankShape.None;
+            if (singleVariant && count >= 2 && max > 0f && max - min <= SameLengthTolerance * max)
+            {
+                shape |= BankShape.SingleVariantSameLength;
+            }
+            return shape;
         }
 
         [HarmonyPatch(typeof(WeaponSoundPlayer), "FireBullet")]
@@ -446,7 +513,7 @@ namespace SoundEngineBackport
                     return true; // original
                 }
 
-                bool legacy = IsLegacyBank(bank);
+                bool legacy = IsLegacyBank(bank, __instance);
                 if (Plugin.Config.LiveEngineEnabled.Value && !legacy)
                 {
                     // ---- live engine path (v2.0) ----
@@ -494,7 +561,7 @@ namespace SoundEngineBackport
                 SoundBank bank = __instance.IsSilenced
                     ? (__instance.BodySilenced != null ? __instance.BodySilenced : __instance.Body)
                     : (__instance.Body != null ? __instance.Body : __instance.BodySilenced);
-                if (bank != null && Plugin.Config.LiveEngineEnabled.Value && !IsLegacyBank(bank))
+                if (bank != null && Plugin.Config.LiveEngineEnabled.Value && !IsLegacyBank(bank, __instance))
                 {
                     LiveWeaponSoundEngine.GetOrCreate(__instance).StopFiringLoop();
                     return false;
@@ -607,8 +674,10 @@ namespace SoundEngineBackport
             t.Field("_pitch").SetValue(pitchMult);
             t.Field("_prevPitchMult").SetValue(pitchMult);
 
-            state.LoopMode = IsLoopClip(clip) || IsLoopClip(clip2);
-            state.LoopClip = IsLoopClip(clip) ? clip : clip2;
+            // loops without "loop" in their names (MassiveSoft): see IsLegacyBank
+            bool unnamedLoop = isAuto && (ShapeOf(soundBank) & BankShape.SingleVariantSameLength) != 0;
+            state.LoopMode = unnamedLoop || IsLoopClip(clip) || IsLoopClip(clip2);
+            state.LoopClip = IsLoopClip(clip) || (unnamedLoop && clip != null) ? clip : clip2;
             float length = Mathf.Max(clip != null ? clip.length : 0f, clip2 != null ? clip2.length : 0f);
             float delay = distance / SoundSpeed;
             double startFire = AudioSettings.dspTime;
