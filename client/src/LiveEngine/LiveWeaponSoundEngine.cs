@@ -1,6 +1,6 @@
 // LiveWeaponSoundEngine: per-WeaponSoundPlayer port of the live 1.3 shot engine.
-// Owns the composite emitter, builds ShotPlaybackContexts from SPT data and
-// drives emitter.Tick from a manager MonoBehaviour.
+// Owns the two emitters, builds ShotPlaybackContexts from SPT data and ticks the
+// emitters from a manager MonoBehaviour.
 using System;
 using System.Collections.Generic;
 using Audio.AuxiliaryAudioUtils;
@@ -15,10 +15,10 @@ namespace SoundEngineBackport.LiveEngine
 {
     public sealed class LiveWeaponSoundEngine
     {
-        private const float SoundSpeed = 340.29f;
+        internal const float SoundSpeed = 340.29f;
         private const double DrainTimeout = 15.0;
 
-        private static readonly AccessTools.FieldRef<BaseSoundPlayer, BaseSoundPlayer.IObserverToPlayerBridge> BridgeRef =
+        internal static readonly AccessTools.FieldRef<BaseSoundPlayer, BaseSoundPlayer.IObserverToPlayerBridge> BridgeRef =
             AccessTools.FieldRefAccess<BaseSoundPlayer, BaseSoundPlayer.IObserverToPlayerBridge>("playersBridge");
         private static readonly AccessTools.FieldRef<BaseSoundPlayer, AudioSourcePriorityCalculator> PriorityRef =
             AccessTools.FieldRefAccess<BaseSoundPlayer, AudioSourcePriorityCalculator>("PriorityCalculator");
@@ -48,10 +48,10 @@ namespace SoundEngineBackport.LiveEngine
 
         // live allows 15, but a shot holds its source while its sound travels: past ~380 m at
         // 800 rpm, stealing the oldest source would drop a shot not heard yet
-        private static readonly WeaponPoolSettings AutoPool = new WeaponPoolSettings { DefaultPoolSize = 5, MinPoolSize = 2, MaxPoolSize = 32 };
+        private const int AutoMaxSources = 32;
 
         // clips last 2 to 3.5 s: enough for a fast semi-auto cadence to ring out uncut
-        private static readonly WeaponPoolSettings SinglePool = new WeaponPoolSettings { DefaultPoolSize = 5, MinPoolSize = 2, MaxPoolSize = 16 };
+        private const int SingleMaxSources = 16;
 
         static LiveWeaponSoundEngine()
         {
@@ -74,7 +74,8 @@ namespace SoundEngineBackport.LiveEngine
                     LiveWeaponSoundEngine engine = Active[i];
                     try
                     {
-                        engine._emitter.Tick(dspNow);
+                        engine._autoEmitter.Tick(dspNow);
+                        engine._singleEmitter.Tick(dspNow);
                         if (engine.IsFinished(dspNow))
                         {
                             Forget(engine, i);
@@ -94,7 +95,8 @@ namespace SoundEngineBackport.LiveEngine
                 Engines.Remove(engine._owner);
                 try
                 {
-                    engine._emitter.Dispose();
+                    engine._autoEmitter.Dispose();
+                    engine._singleEmitter.Dispose();
                 }
                 catch (Exception e)
                 {
@@ -104,23 +106,18 @@ namespace SoundEngineBackport.LiveEngine
         }
 
         private readonly WeaponSoundPlayer _owner;
-        private readonly AudioFireModeSelector _selector;
-        private readonly CompositeGunshotEmitter _emitter;
         private readonly AutoFireGunshotEmitter _autoEmitter;
         private readonly SingleGunshotEmitter _singleEmitter;
+        private GunshotEmitterBase _emitter;
         private BaseSoundPlayer.IObserverToPlayerBridge _bridge;
         private double _drainDeadline = -1.0;
 
         private LiveWeaponSoundEngine(WeaponSoundPlayer owner)
         {
             _owner = owner;
-            _selector = new AudioFireModeSelector();
-            _autoEmitter = new AutoFireGunshotEmitter(SharedPlayback, AutoPool, new BeatQuantizedScheduler());
-            _singleEmitter = new SingleGunshotEmitter(SinglePool);
-            _autoEmitter.PriorityProvider = GetPriority;
-            _singleEmitter.PriorityProvider = GetPriority;
-            _emitter = new CompositeGunshotEmitter(_autoEmitter, _singleEmitter, _selector);
-            _emitter.MixerGroupProvider = ResolveMixerGroup;
+            _autoEmitter = new AutoFireGunshotEmitter(this, SharedPlayback, AutoMaxSources);
+            _singleEmitter = new SingleGunshotEmitter(this, SingleMaxSources);
+            _emitter = _singleEmitter;
             Manager.Active.Add(this);
         }
 
@@ -143,7 +140,7 @@ namespace SoundEngineBackport.LiveEngine
         {
             if (Engines.TryGetValue(owner, out var engine))
             {
-                engine._emitter.Reset();
+                engine.StopFiringLoop();
             }
         }
 
@@ -151,7 +148,7 @@ namespace SoundEngineBackport.LiveEngine
         {
             if (Engines.TryGetValue(owner, out var engine))
             {
-                engine._emitter.Reset();
+                engine.StopFiringLoop();
                 engine._drainDeadline = AudioSettings.dspTime + DrainTimeout;
             }
         }
@@ -162,63 +159,69 @@ namespace SoundEngineBackport.LiveEngine
             {
                 return false;
             }
-            return !_emitter.IsBusy || (_drainDeadline > 0.0 && dspNow >= _drainDeadline);
+            return !(_autoEmitter.IsBusy || _singleEmitter.IsBusy) || (_drainDeadline > 0.0 && dspNow >= _drainDeadline);
+        }
+
+        /// <summary>True when one trigger pull fires several bullets (fullauto, burst). Unknown
+        /// weapons count as such: they keep SPT's trigger-driven behaviour.</summary>
+        internal static bool IsContinuousMode(Weapon weapon)
+        {
+            return weapon == null
+                || weapon.SelectedFireMode == Weapon.EFireMode.fullauto
+                || weapon.SelectedFireMode == Weapon.EFireMode.burst;
         }
 
         /// <summary>Called from the FireBullet patch for every bullet of a live-format bank.</summary>
-        public void FireBullet(Ammo ammo, Vector3 shotPosition, Vector3 shotDirection, float pitchMult, bool multiShot, bool burstOf2Start)
+        public void FireBullet(SoundBank bank, Ammo ammo, Vector3 shotPosition, Vector3 shotDirection, float pitchMult, bool burstOf2Start)
         {
             // read every shot: weapons are pooled and can change owner
             _bridge = BridgeRef(_owner);
             bool firstPerson = _bridge != null && _bridge.PointOfView.IsFirstPerson();
-            EnvironmentType environment = _bridge != null ? _bridge.Environment : EnvironmentType.Outdoor;
             bool isSilenced = _owner.IsSilenced;
-
-            SoundBank bank = multiShot
-                ? (isSilenced ? _owner.DoubletSilenced : _owner.Doublet)
-                : (isSilenced ? _owner.BodySilenced : _owner.Body);
-            if (bank == null)
-            {
-                return;
-            }
-
             Weapon weapon = _bridge?.Weapon as Weapon;
-            bool continuousMode = weapon == null
-                || weapon.SelectedFireMode == Weapon.EFireMode.fullauto
-                || weapon.SelectedFireMode == Weapon.EFireMode.burst;
+            bool continuousMode = IsContinuousMode(weapon);
             bool auto = _owner.IsAutoWeapon && continuousMode;
-            float beat = GetBeatDuration(weapon, continuousMode);
 
-            float distance = _owner.Distance;
-            float delay = firstPerson ? 0f : distance / SoundSpeed;
-            LiveWeaponAudioSettings.Get(weapon?.TemplateId.ToString(), environment, isSilenced, out float maxDistance, out float volume);
-            ComputePitch(weapon, continuousMode, pitchMult, out float pitchA, out float pitchB);
-            Vector3 weaponPosition = _owner.WeaponPosition;
+            var context = new ShotPlaybackContext
+            {
+                Bank = bank,
+                Position = _owner.WeaponPosition,
+                DistanceToListener = _owner.Distance,
+                Environment = _bridge != null ? _bridge.Environment : EnvironmentType.Outdoor,
+                IsFirstPerson = firstPerson,
+                BeatDuration = GetBeatDuration(weapon, continuousMode),
+            };
+            context.Delay = firstPerson ? 0f : context.DistanceToListener / SoundSpeed;
+            LiveWeaponAudioSettings.Get(weapon?.TemplateId.ToString(), context.Environment, isSilenced, out context.MaxDistance, out context.BaseVolume);
+            ComputePitch(weapon, continuousMode, pitchMult, out context.PitchA, out context.PitchB);
 
-            _selector.SetFireMode(auto ? EEmitterFireMode.Auto : EEmitterFireMode.Single);
-            _emitter.RegisterInOcclusionProcess(_bridge);
-            _emitter.EnabledOcclusion(!firstPerson);
-            _emitter.EnabledReverb(firstPerson || environment == EnvironmentType.Indoor);
-            _autoEmitter.SoundPosition = weaponPosition;
-            _singleEmitter.SoundPosition = weaponPosition;
+            // leaving the burst emitter closes its sequence
+            GunshotEmitterBase emitter = auto ? (GunshotEmitterBase)_autoEmitter : _singleEmitter;
+            if (_emitter != emitter)
+            {
+                _emitter.Reset();
+                _emitter = emitter;
+            }
 
             if (PluginConfig.LogShotDetails)
             {
-                Plugin.Log.LogWarning($"[shot] bank={bank.name} fp={firstPerson} auto={auto} dist={distance:F1} " +
-                    $"delay={delay * 1000f:F0}ms beat={beat * 1000f:F0}ms pitch={pitchA:F3}/{pitchB:F3} maxDist={maxDistance:F0} vol={volume:F2} env={environment}");
+                Plugin.Log.LogWarning($"[shot] bank={bank.name} fp={firstPerson} auto={auto} dist={context.DistanceToListener:F1} " +
+                    $"delay={context.Delay * 1000f:F0}ms beat={context.BeatDuration * 1000f:F0}ms pitch={context.PitchA:F3}/{context.PitchB:F3} " +
+                    $"maxDist={context.MaxDistance:F0} vol={context.BaseVolume:F2} env={context.Environment}");
             }
 
-            _emitter.ScheduleShotSound(new ShotPlaybackContext(
-                bank, distance, maxDistance, volume, environment, firstPerson, delay, beat, pitchA, pitchB, isSilenced));
+            _emitter.ScheduleShotSound(context);
             if (burstOf2Start)
             {
                 // the game fires this event once for both bullets of a 2-round burst
                 // (the loop format covered them with the two beats before its tail)
-                _emitter.ScheduleShotSound(new ShotPlaybackContext(
-                    bank, distance, maxDistance, volume, environment, firstPerson, delay + beat, beat, pitchA, pitchB, isSilenced));
+                float delay = context.Delay;
+                context.Delay += context.BeatDuration;
+                _emitter.ScheduleShotSound(context);
+                context.Delay = delay;
             }
 
-            _owner.FireSonicSound(delay, bank.Rolloff, ammo, shotPosition, shotDirection);
+            _owner.FireSonicSound(context.Delay, bank.Rolloff, ammo, shotPosition, shotDirection);
         }
 
         private static void ComputePitch(Weapon weapon, bool continuousMode, float sptPitch, out float pitchA, out float pitchB)
@@ -250,23 +253,31 @@ namespace SoundEngineBackport.LiveEngine
             return rpm > 0f ? Mathf.Max(60f / rpm, 0.03f) : 0.1f;
         }
 
-        private int GetPriority(double distance, float rolloff, float pitch, BetterSource source)
+        internal void ApplyPriority(BetterSource source, float distance, float rolloff)
         {
             AudioSourcePriorityCalculator calculator = PriorityRef(_owner);
-            if (calculator == null)
+            if (calculator != null)
             {
-                return 0;
+                source.SetPriority(calculator.CalculatePriority(distance, rolloff));
             }
-            int priority = calculator.CalculatePriority((float)distance, rolloff);
-            source.SetPriority(priority);
-            return priority;
+        }
+
+        /// <summary>Adds a source to its player's occlusion container. The container computes
+        /// its hearing range when a source joins it, so the rolloff must already be set.</summary>
+        internal void ProcessOcclusion(BetterSource source)
+        {
+            var spatial = MonoBehaviourSingleton<Audio.SpatialSystem.SpatialAudioSystem>.Instance;
+            if (spatial != null && _bridge != null && _bridge.iPlayer != null)
+            {
+                spatial.ProcessSourceOcclusion(_bridge.iPlayer, source);
+            }
         }
 
         /// <summary>Vanilla UpdateMixerGroup does nothing without its _queue, which this
         /// engine never creates: shots would stay on the direct group for good, occluded or
         /// not. Live rule here, and _currentMixerGroup stays up to date for
         /// IsOccludedToListener (distant sonic cracks).</summary>
-        private AudioMixerGroup ResolveMixerGroup()
+        internal AudioMixerGroup ResolveMixerGroup()
         {
             BetterAudio betterAudio = MonoBehaviourSingleton<BetterAudio>.Instance;
             AudioMixerGroup group = betterAudio != null ? betterAudio.GunshotMixerGroup : null;
@@ -284,10 +295,11 @@ namespace SoundEngineBackport.LiveEngine
             return group;
         }
 
-        /// <summary>Called from the StopFiringLoop patch.</summary>
+        /// <summary>Called from the StopFiringLoop patch: closes the burst sequence (single
+        /// shots have none).</summary>
         public void StopFiringLoop()
         {
-            _emitter.Reset();
+            _autoEmitter.Reset();
         }
     }
 }

@@ -7,7 +7,7 @@ using UnityEngine;
 
 namespace SoundEngineBackport.LiveEngine
 {
-    public sealed class DynamicBetterSourcePool : IDisposable
+    public sealed class DynamicBetterSourcePool
     {
         private const double IdleReleaseDelay = 2.0;
 
@@ -20,16 +20,12 @@ namespace SoundEngineBackport.LiveEngine
         }
 
         private readonly List<Slot> _slots = new List<Slot>();
-        private readonly BetterAudio.AudioSourceGroupType _groupType;
         private readonly int _maxPoolSize;
-        private BaseSoundPlayer.IObserverToPlayerBridge _occlusionPlayer;
         private double _lastBorrowTime;
-        private bool _isDisposed;
 
-        public DynamicBetterSourcePool(BetterAudio.AudioSourceGroupType groupType, WeaponPoolSettings settings)
+        public DynamicBetterSourcePool(int maxPoolSize)
         {
-            _groupType = groupType;
-            _maxPoolSize = Math.Max(1, settings.MaxPoolSize);
+            _maxPoolSize = maxPoolSize;
         }
 
         public int PoolSize => _slots.Count;
@@ -77,10 +73,6 @@ namespace SoundEngineBackport.LiveEngine
         public SuperSource Borrow(out bool isNew)
         {
             isNew = false;
-            if (_isDisposed)
-            {
-                return null;
-            }
             double now = AudioSettings.dspTime;
             _lastBorrowTime = now;
             Slot oldest = null;
@@ -127,7 +119,7 @@ namespace SoundEngineBackport.LiveEngine
             {
                 return null;
             }
-            SuperSource source = betterAudio.GetSource(_groupType) as SuperSource;
+            SuperSource source = betterAudio.GetSource(BetterAudio.AudioSourceGroupType.Gunshots) as SuperSource;
             if (source != null)
             {
                 _slots.Add(new Slot
@@ -140,27 +132,26 @@ namespace SoundEngineBackport.LiveEngine
             return source;
         }
 
-        internal LiveFilterBlend GetFilterBlend(SuperSource source)
+        private Slot Find(SuperSource source)
         {
             for (int i = 0; i < _slots.Count; i++)
             {
                 if (_slots[i].Source == source)
                 {
-                    return _slots[i].FilterBlend;
+                    return _slots[i];
                 }
             }
             return null;
         }
 
+        internal LiveFilterBlend GetFilterBlend(SuperSource source) => Find(source)?.FilterBlend;
+
         public void MarkScheduled(SuperSource source, double startTime)
         {
-            for (int i = 0; i < _slots.Count; i++)
+            Slot slot = Find(source);
+            if (slot != null)
             {
-                if (_slots[i].Source == source)
-                {
-                    _slots[i].StartTime = startTime;
-                    return;
-                }
+                slot.StartTime = startTime;
             }
         }
 
@@ -210,34 +201,12 @@ namespace SoundEngineBackport.LiveEngine
             }
             catch (Exception e)
             {
-                SoundEngineBackport.Plugin.Log.LogWarning($"source release failed: {e.Message}");
+                Plugin.Log.LogWarning($"source release failed: {e.Message}");
             }
-        }
-
-        public void RegisterOcclusionPlayer(BaseSoundPlayer.IObserverToPlayerBridge playerBridge)
-        {
-            _occlusionPlayer = playerBridge;
-        }
-
-        /// <summary>Adds a source to its player's occlusion container. The container computes
-        /// its hearing range when a source joins it, so the rolloff must already be set.</summary>
-        public void ProcessOcclusion(BetterSource source)
-        {
-            var spatial = MonoBehaviourSingleton<Audio.SpatialSystem.SpatialAudioSystem>.Instance;
-            if (spatial == null || source == null || _occlusionPlayer == null || _occlusionPlayer.iPlayer == null)
-            {
-                return;
-            }
-            spatial.ProcessSourceOcclusion(_occlusionPlayer.iPlayer, source);
         }
 
         public void Dispose()
         {
-            if (_isDisposed)
-            {
-                return;
-            }
-            _isDisposed = true;
             foreach (Slot slot in _slots)
             {
                 ReleaseSlot(slot);
